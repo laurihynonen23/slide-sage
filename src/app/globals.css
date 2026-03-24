@@ -14,13 +14,75 @@
 
 @media (prefers-color-scheme: dark) {
   :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
+    --background: #09090b;
+    --foreground: #fafafa;
   }
 }
 
 body {
   background: var(--background);
   color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+  font-family: var(--font-sans), system-ui, -apple-system, sans-serif;
+}
+
+/* Scrollbar styling */
+.scrollbar-thin {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(155, 155, 155, 0.3) transparent;
+}
+
+.scrollbar-thin::-webkit-scrollbar {
+  width: 4px;
+}
+
+.scrollbar-thin::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.scrollbar-thin::-webkit-scrollbar-thumb {
+  background-color: rgba(155, 155, 155, 0.3);
+  border-radius: 20px;
+}
+
+.scrollbar-none {
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+
+.scrollbar-none::-webkit-scrollbar {
+  display: none;
+}
+
+/* Prose overrides for chat */
+.prose pre {
+  border-radius: 0.75rem;
+  font-size: 0.75rem;
+}
+
+.prose code {
+  font-size: 0.8em;
+}
+
+/* Expanded chat reading font — clean serif like ChatGPT */
+.prose-reading {
+  font-family: ui-serif, Georgia, Cambria, "Times New Roman", Times, serif;
+  letter-spacing: -0.01em;
+}
+
+.prose-reading p,
+.prose-reading li {
+  line-height: 1.8;
+}
+
+.prose-reading h1,
+.prose-reading h2,
+.prose-reading h3,
+.prose-reading h4,
+.prose-reading strong {
+  font-family: var(--font-sans), system-ui, -apple-system, sans-serif;
+}
+
+/* Selection color */
+::selection {
+  background-color: rgba(59, 130, 246, 0.2);
 }
