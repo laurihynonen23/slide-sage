@@ -13,10 +13,20 @@ function ensureDir(dir: string) {
   }
 }
 
+export async function processPdfStreaming(
+  fileBuffer: Buffer,
+  originalFilename: string,
+  type: "deck" | "exam" = "deck",
+  onProgress?: (stage: "converting" | "thumbnail", current: number, total: number) => void
+): Promise<string> {
+  return processPdf(fileBuffer, originalFilename, type, onProgress);
+}
+
 export async function processPdf(
   fileBuffer: Buffer,
   originalFilename: string,
-  type: "deck" | "exam" = "deck"
+  type: "deck" | "exam" = "deck",
+  onProgress?: (stage: "converting" | "thumbnail", current: number, total: number) => void
 ): Promise<string> {
   const id = uuidv4();
   const outputDir = path.join(PROCESSED_DIR, type === "deck" ? "decks" : "exams", id);
@@ -38,15 +48,16 @@ export async function processPdf(
       `INSERT INTO decks (id, title, original_filename, page_count) VALUES (?, ?, ?, ?)`
     ).run(id, title, originalFilename, pageCount);
 
-    // Process each page - we'll use pdf-to-image conversion via a subprocess
-    await processPages(id, fileBuffer, pageCount, outputDir, "deck");
+    onProgress?.("converting", 0, pageCount);
+    await processPages(id, fileBuffer, pageCount, outputDir, "deck", onProgress);
   } else {
     const title = originalFilename.replace(/\.pdf$/i, "");
     db.prepare(
       `INSERT INTO exam_documents (id, title, original_filename, page_count) VALUES (?, ?, ?, ?)`
     ).run(id, title, originalFilename, pageCount);
 
-    await processPages(id, fileBuffer, pageCount, outputDir, "exam");
+    onProgress?.("converting", 0, pageCount);
+    await processPages(id, fileBuffer, pageCount, outputDir, "exam", onProgress);
   }
 
   return id;
@@ -102,7 +113,8 @@ async function processPages(
   pdfBuffer: Buffer,
   pageCount: number,
   outputDir: string,
-  type: "deck" | "exam"
+  type: "deck" | "exam",
+  onProgress?: (stage: "converting" | "thumbnail", current: number, total: number) => void
 ) {
   const db = getDb();
 
@@ -115,10 +127,9 @@ async function processPages(
   const hasPdftoppm = await checkCommand("pdftoppm");
 
   if (hasPdftoppm) {
-    await convertWithPdftoppm(pdfBuffer, outputDir, parentId, pageCount, type);
+    await convertWithPdftoppm(pdfBuffer, outputDir, parentId, pageCount, type, onProgress);
   } else {
-    // Fallback: save individual page PDFs and use sips (macOS) or convert
-    await convertWithSips(pdfBuffer, outputDir, parentId, pageCount, type);
+    await convertWithSips(pdfBuffer, outputDir, parentId, pageCount, type, onProgress);
   }
 }
 
@@ -136,7 +147,8 @@ async function convertWithPdftoppm(
   outputDir: string,
   parentId: string,
   pageCount: number,
-  type: "deck" | "exam"
+  type: "deck" | "exam",
+  onProgress?: (stage: "converting" | "thumbnail", current: number, total: number) => void
 ) {
   const { execSync } = require("child_process");
   const db = getDb();
@@ -170,6 +182,7 @@ async function convertWithPdftoppm(
 
     if (fs.existsSync(srcFile)) {
       fs.renameSync(srcFile, imagePath);
+      onProgress?.("thumbnail", i, pageCount);
 
       // Generate thumbnail
       await sharp(imagePath).resize(300).png().toFile(thumbPath);
@@ -197,7 +210,8 @@ async function convertWithSips(
   outputDir: string,
   parentId: string,
   pageCount: number,
-  type: "deck" | "exam"
+  type: "deck" | "exam",
+  onProgress?: (stage: "converting" | "thumbnail", current: number, total: number) => void
 ) {
   const { execSync } = require("child_process");
   const db = getDb();
@@ -234,6 +248,7 @@ async function convertWithSips(
     }
 
     if (fs.existsSync(imagePath)) {
+      onProgress?.("thumbnail", i + 1, pageCount);
       await sharp(imagePath).resize(300).png().toFile(thumbPath);
       const metadata = await sharp(imagePath).metadata();
 

@@ -1,6 +1,6 @@
 "use client";
 
-import { useReducer, useEffect, useCallback, useState } from "react";
+import { useReducer, useEffect, useCallback, useState, useRef } from "react";
 import {
   BookOpen,
   FileText,
@@ -11,6 +11,7 @@ import {
   Trash2,
   Loader2,
   Settings,
+  X,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { appReducer, initialState, AppContext } from "@/lib/store";
@@ -29,6 +30,7 @@ export default function Home() {
   const [state, dispatch] = useReducer(appReducer, initialState);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
+  const uploadAbortRef = useRef<AbortController | null>(null);
 
   useEffect(() => {
     fetchDecks();
@@ -71,28 +73,76 @@ export default function Home() {
     }
   };
 
+  const handleCancelUpload = useCallback(() => {
+    uploadAbortRef.current?.abort();
+    dispatch({ type: "SET_UPLOADING", isUploading: false });
+  }, []);
+
   const handleUpload = useCallback(async (file: File, type: "deck" | "exam") => {
-    dispatch({ type: "SET_UPLOADING", isUploading: true, progress: `Processing ${file.name}...` });
+    const controller = new AbortController();
+    uploadAbortRef.current = controller;
+    dispatch({ type: "SET_UPLOADING", isUploading: true, progress: `Uploading ${file.name}...` });
 
     try {
       const formData = new FormData();
       formData.append("file", file);
       formData.append("type", type);
 
-      const res = await fetch("/api/upload", { method: "POST", body: formData });
-      const data = await res.json();
+      const res = await fetch("/api/upload", {
+        method: "POST",
+        body: formData,
+        signal: controller.signal,
+      });
 
-      if (!res.ok) throw new Error(data.error || "Upload failed");
+      if (!res.ok || !res.body) throw new Error("Upload failed");
 
-      if (type === "deck") {
-        await fetchDecks();
-        dispatch({ type: "SET_ACTIVE_DECK", deckId: data.id });
-      } else {
-        await fetchExams();
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let completedData: { id: string; type: string } | null = null;
+      let buffer = "";
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split("\n");
+        buffer = lines.pop() || "";
+
+        for (const line of lines) {
+          if (line.startsWith("data: ")) {
+            try {
+              const payload = JSON.parse(line.slice(6));
+              if (payload.message) {
+                dispatch({ type: "SET_UPLOADING", isUploading: true, progress: payload.message });
+              }
+              if (payload.id) {
+                completedData = payload;
+              }
+              if (payload.error) {
+                throw new Error(payload.error);
+              }
+            } catch (e) {
+              if ((e as Error).message !== "Unexpected end of JSON input") throw e;
+            }
+          }
+        }
       }
-    } catch (err) {
-      console.error("Upload failed:", err);
+
+      if (completedData) {
+        if (type === "deck") {
+          await fetchDecks();
+          dispatch({ type: "SET_ACTIVE_DECK", deckId: completedData.id });
+        } else {
+          await fetchExams();
+        }
+      }
+    } catch (err: unknown) {
+      if ((err as Error).name !== "AbortError") {
+        console.error("Upload failed:", err);
+      }
     } finally {
+      uploadAbortRef.current = null;
       dispatch({ type: "SET_UPLOADING", isUploading: false });
     }
   }, []);
@@ -246,6 +296,7 @@ export default function Home() {
             activeDeck={null}
             onSelectDeck={(id) => dispatch({ type: "SET_ACTIVE_DECK", deckId: id })}
             onDeleteDeck={handleDeleteDeck}
+            onGoHome={() => dispatch({ type: "SET_ACTIVE_DECK", deckId: null })}
             onUpload={handleUpload}
             examsCount={state.exams.length}
             onOpenExams={() => dispatch({ type: "SET_EXAM_PANEL_OPEN", open: true })}
@@ -264,9 +315,19 @@ export default function Home() {
               </div>
               <UploadDropzone onUpload={handleUpload} />
               {state.isUploading && (
-                <div className="flex items-center justify-center gap-2 text-sm text-zinc-500">
-                  <Loader2 className="w-4 h-4 animate-spin" />
-                  {state.uploadProgress}
+                <div className="space-y-2">
+                  <div className="flex items-center justify-center gap-2 text-sm text-zinc-500">
+                    <Loader2 className="w-4 h-4 animate-spin text-blue-500" />
+                    <span>{state.uploadProgress}</span>
+                    <button
+                      onClick={handleCancelUpload}
+                      className="p-0.5 rounded hover:bg-zinc-100 text-zinc-400 hover:text-zinc-600 transition-colors"
+                      title="Cancel upload"
+                    >
+                      <X className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
+                  <UploadProgressBar progress={state.uploadProgress} />
                 </div>
               )}
             </div>
@@ -295,6 +356,7 @@ export default function Home() {
           activeDeck={activeDeck || null}
           onSelectDeck={(id) => dispatch({ type: "SET_ACTIVE_DECK", deckId: id })}
           onDeleteDeck={handleDeleteDeck}
+          onGoHome={() => dispatch({ type: "SET_ACTIVE_DECK", deckId: null })}
           onUpload={handleUpload}
           examsCount={state.exams.length}
           onOpenExams={() => dispatch({ type: "SET_EXAM_PANEL_OPEN", open: true })}
@@ -302,6 +364,7 @@ export default function Home() {
           onOpenSettings={() => setIsSettingsOpen(true)}
           isUploading={state.isUploading}
           uploadProgress={state.uploadProgress}
+          onCancelUpload={handleCancelUpload}
         />
 
         <div className="flex-1 flex min-h-0">
@@ -445,6 +508,7 @@ function TopBar({
   activeDeck,
   onSelectDeck,
   onDeleteDeck,
+  onGoHome,
   onUpload,
   examsCount,
   onOpenExams,
@@ -452,11 +516,13 @@ function TopBar({
   onOpenSettings,
   isUploading,
   uploadProgress,
+  onCancelUpload,
 }: {
   decks: Deck[];
   activeDeck: Deck | null;
   onSelectDeck: (id: string) => void;
   onDeleteDeck: (id: string) => void;
+  onGoHome: () => void;
   onUpload: (file: File, type: "deck" | "exam") => Promise<void>;
   examsCount: number;
   onOpenExams: () => void;
@@ -464,14 +530,19 @@ function TopBar({
   onOpenSettings?: () => void;
   isUploading?: boolean;
   uploadProgress?: string;
+  onCancelUpload?: () => void;
 }) {
   return (
     <div className="flex items-center justify-between px-4 py-2.5 border-b border-zinc-200/60 dark:border-zinc-800/60 bg-white dark:bg-zinc-950 flex-shrink-0">
       <div className="flex items-center gap-4">
-        <div className="flex items-center gap-1.5">
+        <button
+          onClick={onGoHome}
+          className="flex items-center gap-1.5 hover:opacity-70 transition-opacity"
+          title="Back to home"
+        >
           <span className="text-sm font-black tracking-tight text-zinc-900 dark:text-zinc-100">Slide</span>
           <span className="text-sm font-black tracking-tight text-zinc-400 dark:text-zinc-600">Sage</span>
-        </div>
+        </button>
 
         {decks.length > 0 && (
           <div className="relative group">
@@ -513,9 +584,18 @@ function TopBar({
 
       <div className="flex items-center gap-2">
         {isUploading && (
-          <div className="flex items-center gap-1.5 text-xs text-zinc-500">
-            <Loader2 className="w-3.5 h-3.5 animate-spin" />
-            <span>{uploadProgress}</span>
+          <div className="flex items-center gap-1.5 text-xs text-zinc-500 max-w-[260px]">
+            <Loader2 className="w-3.5 h-3.5 animate-spin text-blue-500 flex-shrink-0" />
+            <span className="truncate">{uploadProgress}</span>
+            {onCancelUpload && (
+              <button
+                onClick={onCancelUpload}
+                className="p-0.5 rounded hover:bg-zinc-100 dark:hover:bg-zinc-800 text-zinc-400 hover:text-zinc-600 transition-colors flex-shrink-0"
+                title="Cancel upload"
+              >
+                <X className="w-3.5 h-3.5" />
+              </button>
+            )}
           </div>
         )}
 
@@ -551,6 +631,30 @@ function TopBar({
           <Settings className="w-4 h-4" />
         </button>
       </div>
+    </div>
+  );
+}
+
+function UploadProgressBar({ progress }: { progress: string }) {
+  // Parse "Processing thumbnails (12/36)..." to get percentage
+  const match = progress.match(/\((\d+)\/(\d+)\)/);
+  const pct = match ? Math.round((parseInt(match[1]) / parseInt(match[2])) * 100) : null;
+
+  // Indeterminate during uploading/converting stages
+  if (pct === null) {
+    return (
+      <div className="w-full h-1 bg-zinc-100 dark:bg-zinc-800 rounded-full overflow-hidden">
+        <div className="h-full bg-blue-500 rounded-full animate-pulse w-1/3" />
+      </div>
+    );
+  }
+
+  return (
+    <div className="w-full h-1 bg-zinc-100 dark:bg-zinc-800 rounded-full overflow-hidden">
+      <div
+        className="h-full bg-blue-500 rounded-full transition-all duration-300"
+        style={{ width: `${pct}%` }}
+      />
     </div>
   );
 }
