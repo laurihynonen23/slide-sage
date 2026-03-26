@@ -252,14 +252,14 @@ export default function Home() {
             onOpenSettings={() => setIsSettingsOpen(true)}
           />
           <div className="flex-1 flex items-center justify-center p-8">
-            <div className="max-w-lg w-full space-y-8">
-              <div className="text-center space-y-3">
-                <div className="w-16 h-16 rounded-2xl bg-gradient-to-br from-blue-500 to-blue-600 flex items-center justify-center mx-auto shadow-lg shadow-blue-500/20">
-                  <GraduationCap className="w-8 h-8 text-white" />
+            <div className="max-w-2xl w-full space-y-12">
+              <div className="text-center space-y-6">
+                <div className="inline-flex items-baseline gap-1">
+                  <h1 className="text-5xl font-black tracking-tight text-zinc-900 dark:text-zinc-50">Slide</h1>
+                  <h1 className="text-5xl font-black tracking-tight text-zinc-400 dark:text-zinc-600">Sage</h1>
                 </div>
-                <h1 className="text-2xl font-bold text-zinc-800 dark:text-zinc-100">SlideSage</h1>
-                <p className="text-sm text-zinc-500 max-w-sm mx-auto">
-                  Upload your lecture slides and study smarter with AI-powered explanations, region-based Q&A, and exam preparation.
+                <p className="text-lg text-zinc-600 dark:text-zinc-400 max-w-xl mx-auto leading-relaxed">
+                  Study assistant for lecture PDFs. Upload slides, ask questions about specific regions, and get AI help with exam prep.
                 </p>
               </div>
               <UploadDropzone onUpload={handleUpload} />
@@ -466,13 +466,11 @@ function TopBar({
   uploadProgress?: string;
 }) {
   return (
-    <div className="flex items-center justify-between px-4 py-2.5 border-b border-zinc-200/60 dark:border-zinc-800/60 bg-white/90 dark:bg-zinc-950/90 backdrop-blur-sm flex-shrink-0">
+    <div className="flex items-center justify-between px-4 py-2.5 border-b border-zinc-200/60 dark:border-zinc-800/60 bg-white dark:bg-zinc-950 flex-shrink-0">
       <div className="flex items-center gap-4">
-        <div className="flex items-center gap-2">
-          <div className="w-7 h-7 rounded-lg bg-gradient-to-br from-blue-500 to-blue-600 flex items-center justify-center">
-            <GraduationCap className="w-4 h-4 text-white" />
-          </div>
-          <span className="text-sm font-bold text-zinc-800 dark:text-zinc-200">SlideSage</span>
+        <div className="flex items-center gap-1.5">
+          <span className="text-sm font-black tracking-tight text-zinc-900 dark:text-zinc-100">Slide</span>
+          <span className="text-sm font-black tracking-tight text-zinc-400 dark:text-zinc-600">Sage</span>
         </div>
 
         {decks.length > 0 && (
@@ -482,7 +480,7 @@ function TopBar({
               <span className="max-w-[200px] truncate">{activeDeck?.title || "Select deck"}</span>
               <ChevronDown className="w-3 h-3 text-zinc-400" />
             </button>
-            <div className="absolute top-full left-0 mt-1 w-64 bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-700 rounded-xl shadow-xl opacity-0 invisible group-hover:opacity-100 group-hover:visible transition-all z-50">
+            <div className="absolute top-full left-0 mt-1 w-64 bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-700 rounded-xl shadow-xl opacity-0 invisible group-hover:opacity-100 group-hover:visible transition-all z-[200]">
               <div className="p-1.5 max-h-64 overflow-y-auto">
                 {decks.map(deck => (
                   <div
