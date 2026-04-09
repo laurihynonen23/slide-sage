@@ -3,19 +3,29 @@ import {
   createWorkspaceId,
   isValidWorkspaceId,
   WORKSPACE_COOKIE_NAME,
+  WORKSPACE_HEADER_NAME,
 } from "@/lib/user-session";
 
 export function proxy(request: NextRequest) {
-  const workspaceId = request.cookies.get(WORKSPACE_COOKIE_NAME)?.value;
+  const cookieWorkspaceId = request.cookies.get(WORKSPACE_COOKIE_NAME)?.value;
+  const workspaceId = isValidWorkspaceId(cookieWorkspaceId)
+    ? cookieWorkspaceId
+    : createWorkspaceId();
+  const requestHeaders = new Headers(request.headers);
+  requestHeaders.set(WORKSPACE_HEADER_NAME, workspaceId);
+  const response = NextResponse.next({
+    request: {
+      headers: requestHeaders,
+    },
+  });
 
-  if (isValidWorkspaceId(workspaceId)) {
-    return NextResponse.next();
+  if (isValidWorkspaceId(cookieWorkspaceId)) {
+    return response;
   }
 
-  const response = NextResponse.next();
   response.cookies.set({
     name: WORKSPACE_COOKIE_NAME,
-    value: createWorkspaceId(),
+    value: workspaceId,
     httpOnly: true,
     sameSite: "lax",
     secure: process.env.NODE_ENV === "production",
