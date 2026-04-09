@@ -216,7 +216,7 @@ export function AIChatPanel({
       {/* Messages */}
       <div className={cn(
         "flex-1 overflow-y-auto py-5 space-y-6 scrollbar-thin",
-        isExpanded ? "px-8 md:px-16 lg:px-24" : "px-4"
+        isExpanded ? "px-5 md:px-8 lg:px-10" : "px-4"
       )}>
         {messages.length === 0 && showQuickActions && (
           <div className="space-y-3">
@@ -255,7 +255,11 @@ export function AIChatPanel({
               transition={{ duration: 0.15 }}
               className={cn(
                 "text-sm",
-                msg.role === "user" ? "flex justify-end" : ""
+                msg.role === "user"
+                  ? "flex justify-end"
+                  : isExpanded
+                    ? "flex justify-center"
+                    : ""
               )}
             >
               {msg.role === "user" ? (
@@ -270,10 +274,10 @@ export function AIChatPanel({
                 </div>
               ) : (
                 <div className={cn(
-                  "prose dark:prose-invert max-w-none prose-p:leading-[1.75] prose-headings:mt-5 prose-headings:mb-2.5 prose-li:my-1 prose-ul:my-2.5 prose-ol:my-2.5 prose-pre:bg-zinc-100 dark:prose-pre:bg-zinc-800 prose-pre:my-3 [&_.katex-display]:my-4 [&_.katex-display]:overflow-x-auto",
+                  "prose dark:prose-invert w-full prose-p:leading-[1.75] prose-headings:mt-5 prose-headings:mb-2.5 prose-li:my-1 prose-ul:my-2.5 prose-ol:my-2.5 prose-pre:bg-zinc-100 dark:prose-pre:bg-zinc-800 prose-pre:my-3 [&_.katex-display]:my-4 [&_.katex-display]:overflow-x-auto",
                   isExpanded
-                    ? "prose-base prose-reading prose-p:my-3 prose-pre:text-sm [&_.katex]:text-base"
-                    : "prose-sm prose-p:my-2.5 prose-pre:text-[12px] [&_.katex]:text-[0.95em]"
+                    ? "max-w-[46rem] prose-base prose-reading mx-auto prose-p:my-3 prose-pre:text-sm [&_.katex]:text-base"
+                    : "max-w-none prose-sm prose-p:my-2.5 prose-pre:text-[12px] [&_.katex]:text-[0.95em]"
                 )}>
                   <ReactMarkdown remarkPlugins={[remarkMath]} rehypePlugins={[rehypeKatex]}>{preprocessLatex(msg.content)}</ReactMarkdown>
                 </div>
