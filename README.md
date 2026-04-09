@@ -21,18 +21,7 @@ AI-powered study assistant for lecture slides and exam preparation. Upload your 
 ### Prerequisites
 
 - Node.js 18+
-- An Anthropic API key
-- `pdftoppm` (recommended, from poppler) for high-quality PDF rendering, or `sips` (macOS built-in) as fallback
-
-### Install pdftoppm (recommended)
-
-```bash
-# macOS
-brew install poppler
-
-# Ubuntu/Debian
-sudo apt-get install poppler-utils
-```
+- An Anthropic or OpenAI API key
 
 ### Setup
 
@@ -43,8 +32,9 @@ npm install
 # Copy environment variables
 cp .env.example .env.local
 
-# Add your Anthropic API key to .env.local
+# Add your API key to .env.local
 # ANTHROPIC_API_KEY=sk-ant-...
+# or OPENAI_API_KEY=sk-...
 
 # Start development server
 npm run dev
@@ -56,8 +46,22 @@ Open [http://localhost:3000](http://localhost:3000) in your browser.
 
 | Variable | Required | Description |
 |---|---|---|
-| `ANTHROPIC_API_KEY` | Yes | Your Anthropic API key |
-| `AI_MODEL` | No | Model to use (default: `claude-sonnet-4-20250514`) |
+| `ANTHROPIC_API_KEY` | No | Anthropic API key |
+| `OPENAI_API_KEY` | No | OpenAI API key |
+| `AI_MODEL` | No | Model to use (default: `claude-sonnet-4-20250514` for Anthropic) |
+| `BLOB_READ_WRITE_TOKEN` | Hosted persistence | Required on Vercel if you want uploaded slides/exams to persist across requests |
+
+At least one of `ANTHROPIC_API_KEY` or `OPENAI_API_KEY` must be set.
+
+### Hosted Deployments
+
+For Vercel deployments:
+
+1. Set your API key in Vercel project environment variables.
+2. Create a Vercel Blob store and set `BLOB_READ_WRITE_TOKEN`.
+3. The app will upload files directly to Blob, process them server-side, and keep decks/exams in durable storage.
+
+The hosted app no longer stores API keys through the public settings UI. Provider/model preferences can still persist, but API keys should come from environment variables.
 
 ## Architecture
 
@@ -65,7 +69,8 @@ Open [http://localhost:3000](http://localhost:3000) in your browser.
 src/
 ├── app/
 │   ├── api/
-│   │   ├── upload/          # File upload (PDF, PNG, JPG)
+│   │   ├── upload/          # Upload mode + Vercel Blob token exchange
+│   │   ├── process-upload/  # Process uploaded Blob files into slides/pages
 │   │   ├── decks/           # Deck CRUD
 │   │   ├── slides/          # Slide data and image serving
 │   │   ├── chat/            # Streaming AI chat
@@ -83,9 +88,10 @@ src/
 │   ├── SlideThumbnailRail.tsx  # Thumbnail sidebar
 │   └── UploadDropzone.tsx   # File upload component
 └── lib/
-    ├── ai.ts                # Anthropic API integration
-    ├── db.ts                # SQLite database
-    ├── pdf-processor.ts     # PDF splitting and image conversion
+    ├── ai.ts                # Legacy AI integration
+    ├── persistence.ts       # Local/Blob-backed durable app state + asset storage
+    ├── pdf-processor.ts     # PDF/image processing and page rendering
+    ├── provider-settings.ts # Provider/model/env resolution
     ├── store.ts             # Client state management
     ├── types.ts             # TypeScript types and constants
     └── utils.ts             # Utility functions
@@ -106,9 +112,11 @@ src/
 - **Next.js 16** with App Router and TypeScript
 - **Tailwind CSS** for styling
 - **Framer Motion** for animations
-- **SQLite** (better-sqlite3) for data storage
+- **Local JSON state or Vercel Blob** for persistence
 - **Sharp** for image processing
+- **PDF.js + @napi-rs/canvas** for portable PDF rendering
 - **Anthropic Claude** for multimodal AI (understands both text and images)
+- **OpenAI** as an alternative provider
 - **Lucide React** for icons
 
 ## Keyboard Shortcuts
@@ -121,13 +129,14 @@ src/
 
 ## How It Works
 
-1. **Upload** a PDF — pages are split into individual slide images and thumbnails
-2. **Browse** slides using the thumbnail rail or keyboard shortcuts
-3. **Ask** the AI about the current slide — it receives the actual slide image for visual understanding
-4. **Select a region** by clicking the Select button and dragging over part of the slide
-5. **Adjust difficulty** and context to control how the AI responds
-6. **Upload exams** to get AI-powered study priority analysis
-7. **Generate quizzes** from any slide range with customizable difficulty and question types
+1. **Upload** a PDF or image
+2. **Process** it into per-page slide images and thumbnails
+3. **Browse** slides using the thumbnail rail or keyboard shortcuts
+4. **Ask** the AI about the current slide — it receives the actual slide image for visual understanding
+5. **Select a region** by clicking the Select button and dragging over part of the slide
+6. **Adjust difficulty** and context to control how the AI responds
+7. **Upload exams** to get AI-powered study priority analysis
+8. **Generate quizzes** from any slide range with customizable difficulty and question types
 
 ## License
 

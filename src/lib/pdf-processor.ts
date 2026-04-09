@@ -1,23 +1,120 @@
-import { PDFDocument } from "pdf-lib";
 import sharp from "sharp";
-import path from "path";
-import fs from "fs";
 import { v4 as uuidv4 } from "uuid";
-import { getDb } from "./db";
+import type { Deck, ExamDocument, ExamPage, Slide } from "./types";
+import {
+  deckAssetPrefix,
+  examAssetPrefix,
+  loadAppState,
+  readAssetBuffer,
+  saveAppState,
+  sanitizeFilename,
+  sourceAssetPath,
+  writeAssetBuffer,
+} from "./persistence";
 
-const PROCESSED_DIR = path.join(process.cwd(), "data", "processed");
+type ProgressStage = "converting" | "thumbnail";
 
-function ensureDir(dir: string) {
-  if (!fs.existsSync(dir)) {
-    fs.mkdirSync(dir, { recursive: true });
+let pdfRuntimePromise: Promise<{
+  createCanvas: typeof import("@napi-rs/canvas").createCanvas;
+  getDocument: typeof import("pdfjs-dist/legacy/build/pdf.mjs").getDocument;
+}> | null = null;
+
+function extensionFromFilename(filename: string): string {
+  const ext = filename.split(".").pop()?.toLowerCase();
+  return ext || "bin";
+}
+
+function contentTypeFromExtension(ext: string): string {
+  switch (ext.toLowerCase()) {
+    case "pdf":
+      return "application/pdf";
+    case "png":
+      return "image/png";
+    case "jpg":
+    case "jpeg":
+      return "image/jpeg";
+    default:
+      return "application/octet-stream";
   }
+}
+
+async function getPdfRuntime() {
+  if (!pdfRuntimePromise) {
+    pdfRuntimePromise = (async () => {
+      const canvas = await import("@napi-rs/canvas");
+      const pdfjs = await import("pdfjs-dist/legacy/build/pdf.mjs");
+
+      const globalScope = globalThis as unknown as {
+        DOMMatrix?: typeof canvas.DOMMatrix;
+        ImageData?: typeof canvas.ImageData;
+        Path2D?: typeof canvas.Path2D;
+      };
+
+      if (!globalScope.DOMMatrix) globalScope.DOMMatrix = canvas.DOMMatrix;
+      if (!globalScope.ImageData) globalScope.ImageData = canvas.ImageData;
+      if (!globalScope.Path2D) globalScope.Path2D = canvas.Path2D;
+
+      return {
+        createCanvas: canvas.createCanvas,
+        getDocument: pdfjs.getDocument,
+      };
+    })();
+  }
+
+  return pdfRuntimePromise;
+}
+
+function getTitleFromFilename(filename: string): string {
+  return filename.replace(/\.[^.]+$/i, "");
+}
+
+async function renderPdfPages(
+  pdfBuffer: Buffer,
+  onProgress?: (stage: ProgressStage, current: number, total: number) => void
+): Promise<Array<{ imageBuffer: Buffer; width: number; height: number }>> {
+  const { createCanvas, getDocument } = await getPdfRuntime();
+  const init = {
+    data: new Uint8Array(pdfBuffer),
+    disableWorker: true,
+    useWorkerFetch: false,
+    isEvalSupported: false,
+    useSystemFonts: true,
+  };
+  const document = await getDocument(init as Parameters<typeof getDocument>[0]).promise;
+
+  const renderedPages: Array<{ imageBuffer: Buffer; width: number; height: number }> = [];
+  const total = document.numPages;
+  onProgress?.("converting", 0, total);
+
+  for (let index = 1; index <= total; index++) {
+    const page = await document.getPage(index);
+    const baseViewport = page.getViewport({ scale: 1 });
+    const scale = Math.max(1, 1600 / Math.max(baseViewport.width, 1));
+    const viewport = page.getViewport({ scale });
+    const width = Math.ceil(viewport.width);
+    const height = Math.ceil(viewport.height);
+    const canvas = createCanvas(width, height);
+    const context = canvas.getContext("2d");
+
+    await page.render({
+      canvas: canvas as unknown as HTMLCanvasElement,
+      canvasContext: context as unknown as CanvasRenderingContext2D,
+      viewport,
+    }).promise;
+    const imageBuffer = await canvas.encode("png");
+
+    renderedPages.push({ imageBuffer, width, height });
+    onProgress?.("thumbnail", index, total);
+  }
+
+  return renderedPages;
 }
 
 export async function processPdfStreaming(
   fileBuffer: Buffer,
   originalFilename: string,
   type: "deck" | "exam" = "deck",
-  onProgress?: (stage: "converting" | "thumbnail", current: number, total: number) => void
+  onProgress?: (stage: ProgressStage, current: number, total: number) => void
 ): Promise<string> {
   return processPdf(fileBuffer, originalFilename, type, onProgress);
 }
@@ -26,40 +123,92 @@ export async function processPdf(
   fileBuffer: Buffer,
   originalFilename: string,
   type: "deck" | "exam" = "deck",
-  onProgress?: (stage: "converting" | "thumbnail", current: number, total: number) => void
+  onProgress?: (stage: ProgressStage, current: number, total: number) => void
 ): Promise<string> {
   const id = uuidv4();
-  const outputDir = path.join(PROCESSED_DIR, type === "deck" ? "decks" : "exams", id);
-  ensureDir(outputDir);
+  const extension = extensionFromFilename(originalFilename);
+  const title = getTitleFromFilename(originalFilename);
+  const state = await loadAppState();
+  const assetPrefix = type === "deck" ? deckAssetPrefix(id) : examAssetPrefix(id);
 
-  // Save original file
-  const originalPath = path.join(outputDir, originalFilename);
-  fs.writeFileSync(originalPath, fileBuffer);
+  await writeAssetBuffer(
+    sourceAssetPath(id, type, extension),
+    fileBuffer,
+    contentTypeFromExtension(extension)
+  );
 
-  // Get page count from PDF
-  const pdfDoc = await PDFDocument.load(fileBuffer);
-  const pageCount = pdfDoc.getPageCount();
-
-  const db = getDb();
+  const renderedPages = await renderPdfPages(fileBuffer, onProgress);
+  const createdAt = new Date().toISOString();
 
   if (type === "deck") {
-    const title = originalFilename.replace(/\.pdf$/i, "");
-    db.prepare(
-      `INSERT INTO decks (id, title, original_filename, page_count) VALUES (?, ?, ?, ?)`
-    ).run(id, title, originalFilename, pageCount);
+    const deck: Deck = {
+      id,
+      title,
+      original_filename: sanitizeFilename(originalFilename),
+      page_count: renderedPages.length,
+      created_at: createdAt,
+      updated_at: createdAt,
+    };
 
-    onProgress?.("converting", 0, pageCount);
-    await processPages(id, fileBuffer, pageCount, outputDir, "deck", onProgress);
+    state.decks = [deck, ...state.decks];
+
+    const newSlides: Slide[] = [];
+    for (const [index, page] of renderedPages.entries()) {
+      const slideNumber = index + 1;
+      const imagePath = `${assetPrefix}slide_${slideNumber}.png`;
+      const thumbnailPath = `${assetPrefix}thumb_${slideNumber}.png`;
+      const thumbnailBuffer = await sharp(page.imageBuffer).resize(300).png().toBuffer();
+
+      await writeAssetBuffer(imagePath, page.imageBuffer, "image/png");
+      await writeAssetBuffer(thumbnailPath, thumbnailBuffer, "image/png");
+
+      newSlides.push({
+        id: uuidv4(),
+        deck_id: id,
+        slide_number: slideNumber,
+        image_path: imagePath,
+        thumbnail_path: thumbnailPath,
+        extracted_text: "",
+        width: page.width,
+        height: page.height,
+      });
+    }
+
+    state.slides.push(...newSlides);
   } else {
-    const title = originalFilename.replace(/\.pdf$/i, "");
-    db.prepare(
-      `INSERT INTO exam_documents (id, title, original_filename, page_count) VALUES (?, ?, ?, ?)`
-    ).run(id, title, originalFilename, pageCount);
+    const exam: ExamDocument = {
+      id,
+      title,
+      original_filename: sanitizeFilename(originalFilename),
+      page_count: renderedPages.length,
+      created_at: createdAt,
+    };
 
-    onProgress?.("converting", 0, pageCount);
-    await processPages(id, fileBuffer, pageCount, outputDir, "exam", onProgress);
+    state.exams = [exam, ...state.exams];
+
+    const newPages: ExamPage[] = [];
+    for (const [index, page] of renderedPages.entries()) {
+      const pageNumber = index + 1;
+      const imagePath = `${assetPrefix}slide_${pageNumber}.png`;
+      const thumbnailPath = `${assetPrefix}thumb_${pageNumber}.png`;
+      const thumbnailBuffer = await sharp(page.imageBuffer).resize(300).png().toBuffer();
+
+      await writeAssetBuffer(imagePath, page.imageBuffer, "image/png");
+      await writeAssetBuffer(thumbnailPath, thumbnailBuffer, "image/png");
+
+      newPages.push({
+        id: uuidv4(),
+        exam_id: id,
+        page_number: pageNumber,
+        image_path: imagePath,
+        extracted_text: "",
+      });
+    }
+
+    state.examPages.push(...newPages);
   }
 
+  await saveAppState(state);
   return id;
 }
 
@@ -69,218 +218,80 @@ export async function processImage(
   type: "deck" | "exam" = "deck"
 ): Promise<string> {
   const id = uuidv4();
-  const outputDir = path.join(PROCESSED_DIR, type === "deck" ? "decks" : "exams", id);
-  ensureDir(outputDir);
+  const extension = extensionFromFilename(originalFilename);
+  const title = getTitleFromFilename(originalFilename);
+  const state = await loadAppState();
+  const assetPrefix = type === "deck" ? deckAssetPrefix(id) : examAssetPrefix(id);
+  const sourcePath = sourceAssetPath(id, type, extension);
+  const imagePath = `${assetPrefix}slide_1.png`;
+  const thumbnailPath = `${assetPrefix}thumb_1.png`;
 
-  const db = getDb();
-
-  // Process image with sharp
   const image = sharp(fileBuffer);
   const metadata = await image.metadata();
+  const normalizedImage = await image.png().toBuffer();
+  const thumbnailBuffer = await sharp(normalizedImage).resize(300).png().toBuffer();
+  const createdAt = new Date().toISOString();
 
-  const imagePath = path.join(outputDir, "slide_1.png");
-  const thumbPath = path.join(outputDir, "thumb_1.png");
-
-  await image.png().toFile(imagePath);
-  await image.resize(300).png().toFile(thumbPath);
+  await writeAssetBuffer(sourcePath, fileBuffer, contentTypeFromExtension(extension));
+  await writeAssetBuffer(imagePath, normalizedImage, "image/png");
+  await writeAssetBuffer(thumbnailPath, thumbnailBuffer, "image/png");
 
   if (type === "deck") {
-    const title = originalFilename.replace(/\.(png|jpg|jpeg)$/i, "");
-    db.prepare(
-      `INSERT INTO decks (id, title, original_filename, page_count) VALUES (?, ?, ?, ?)`
-    ).run(id, title, originalFilename, 1);
+    const deck: Deck = {
+      id,
+      title,
+      original_filename: sanitizeFilename(originalFilename),
+      page_count: 1,
+      created_at: createdAt,
+      updated_at: createdAt,
+    };
 
-    const slideId = uuidv4();
-    db.prepare(
-      `INSERT INTO slides (id, deck_id, slide_number, image_path, thumbnail_path, extracted_text, width, height) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
-    ).run(slideId, id, 1, imagePath, thumbPath, "", metadata.width || 0, metadata.height || 0);
-  } else {
-    db.prepare(
-      `INSERT INTO exam_documents (id, title, original_filename, page_count) VALUES (?, ?, ?, ?)`
-    ).run(id, originalFilename.replace(/\.(png|jpg|jpeg)$/i, ""), originalFilename, 1);
-
-    const pageId = uuidv4();
-    db.prepare(
-      `INSERT INTO exam_pages (id, exam_id, page_number, image_path, extracted_text) VALUES (?, ?, ?, ?, ?)`
-    ).run(pageId, id, 1, imagePath, "");
-  }
-
-  return id;
-}
-
-async function processPages(
-  parentId: string,
-  pdfBuffer: Buffer,
-  pageCount: number,
-  outputDir: string,
-  type: "deck" | "exam",
-  onProgress?: (stage: "converting" | "thumbnail", current: number, total: number) => void
-) {
-  const db = getDb();
-
-  // We'll convert PDF pages to images using pdftoppm or a Node-based approach
-  // For robustness, we'll extract individual page PDFs then convert with sharp via pdf rendering
-  // Since sharp can't directly render PDFs, we'll use the pdftocairo/pdftoppm system utility
-  // or fall back to a pure-JS approach
-
-  // Try system pdftoppm first (most reliable for quality)
-  const hasPdftoppm = await checkCommand("pdftoppm");
-
-  if (hasPdftoppm) {
-    await convertWithPdftoppm(pdfBuffer, outputDir, parentId, pageCount, type, onProgress);
-  } else {
-    await convertWithSips(pdfBuffer, outputDir, parentId, pageCount, type, onProgress);
-  }
-}
-
-async function checkCommand(cmd: string): Promise<boolean> {
-  const { exec } = require("child_process");
-  return new Promise((resolve) => {
-    exec(`which ${cmd}`, (error: Error | null) => {
-      resolve(!error);
+    state.decks = [deck, ...state.decks];
+    state.slides.push({
+      id: uuidv4(),
+      deck_id: id,
+      slide_number: 1,
+      image_path: imagePath,
+      thumbnail_path: thumbnailPath,
+      extracted_text: "",
+      width: metadata.width || 0,
+      height: metadata.height || 0,
     });
-  });
-}
+  } else {
+    const exam: ExamDocument = {
+      id,
+      title,
+      original_filename: sanitizeFilename(originalFilename),
+      page_count: 1,
+      created_at: createdAt,
+    };
 
-async function convertWithPdftoppm(
-  pdfBuffer: Buffer,
-  outputDir: string,
-  parentId: string,
-  pageCount: number,
-  type: "deck" | "exam",
-  onProgress?: (stage: "converting" | "thumbnail", current: number, total: number) => void
-) {
-  const { execSync } = require("child_process");
-  const db = getDb();
-
-  const pdfPath = path.join(outputDir, "source.pdf");
-  fs.writeFileSync(pdfPath, pdfBuffer);
-
-  // Convert all pages to PNG
-  execSync(`pdftoppm -png -r 200 "${pdfPath}" "${path.join(outputDir, "page")}"`, {
-    timeout: 120000,
-  });
-
-  for (let i = 1; i <= pageCount; i++) {
-    const paddedNum = String(i).padStart(pageCount > 99 ? 3 : pageCount > 9 ? 2 : 1, "0");
-    // pdftoppm names files as page-01.png, page-02.png, etc.
-    let srcFile = path.join(outputDir, `page-${paddedNum}.png`);
-
-    // Try different padding schemes
-    if (!fs.existsSync(srcFile)) {
-      srcFile = path.join(outputDir, `page-${String(i).padStart(2, "0")}.png`);
-    }
-    if (!fs.existsSync(srcFile)) {
-      srcFile = path.join(outputDir, `page-${String(i).padStart(3, "0")}.png`);
-    }
-    if (!fs.existsSync(srcFile)) {
-      srcFile = path.join(outputDir, `page-${i}.png`);
-    }
-
-    const imagePath = path.join(outputDir, `slide_${i}.png`);
-    const thumbPath = path.join(outputDir, `thumb_${i}.png`);
-
-    if (fs.existsSync(srcFile)) {
-      fs.renameSync(srcFile, imagePath);
-      onProgress?.("thumbnail", i, pageCount);
-
-      // Generate thumbnail
-      await sharp(imagePath).resize(300).png().toFile(thumbPath);
-
-      const metadata = await sharp(imagePath).metadata();
-
-      // Extract text using basic approach (the AI will handle visual understanding)
-      const slideId = uuidv4();
-
-      if (type === "deck") {
-        db.prepare(
-          `INSERT INTO slides (id, deck_id, slide_number, image_path, thumbnail_path, extracted_text, width, height) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
-        ).run(slideId, parentId, i, imagePath, thumbPath, "", metadata.width || 0, metadata.height || 0);
-      } else {
-        db.prepare(
-          `INSERT INTO exam_pages (id, exam_id, page_number, image_path, extracted_text) VALUES (?, ?, ?, ?, ?)`
-        ).run(slideId, parentId, i, imagePath, "");
-      }
-    }
+    state.exams = [exam, ...state.exams];
+    state.examPages.push({
+      id: uuidv4(),
+      exam_id: id,
+      page_number: 1,
+      image_path: imagePath,
+      extracted_text: "",
+    });
   }
-}
 
-async function convertWithSips(
-  pdfBuffer: Buffer,
-  outputDir: string,
-  parentId: string,
-  pageCount: number,
-  type: "deck" | "exam",
-  onProgress?: (stage: "converting" | "thumbnail", current: number, total: number) => void
-) {
-  const { execSync } = require("child_process");
-  const db = getDb();
-  const pdfDoc = await PDFDocument.load(pdfBuffer);
-
-  for (let i = 0; i < pageCount; i++) {
-    const singlePagePdf = await PDFDocument.create();
-    const [copiedPage] = await singlePagePdf.copyPages(pdfDoc, [i]);
-    singlePagePdf.addPage(copiedPage);
-    const singlePageBytes = await singlePagePdf.save();
-
-    const singlePdfPath = path.join(outputDir, `page_${i + 1}.pdf`);
-    const imagePath = path.join(outputDir, `slide_${i + 1}.png`);
-    const thumbPath = path.join(outputDir, `thumb_${i + 1}.png`);
-
-    fs.writeFileSync(singlePdfPath, singlePageBytes);
-
-    try {
-      // Use sips on macOS to convert PDF to PNG
-      execSync(
-        `sips -s format png "${singlePdfPath}" --out "${imagePath}" --resampleWidth 1600 2>/dev/null`,
-        { timeout: 30000 }
-      );
-    } catch {
-      // If sips fails, try convert (ImageMagick)
-      try {
-        execSync(`convert -density 200 "${singlePdfPath}" "${imagePath}"`, { timeout: 30000 });
-      } catch {
-        // Last resort: create a placeholder
-        await sharp({
-          create: { width: 800, height: 600, channels: 4, background: { r: 240, g: 240, b: 240, alpha: 1 } }
-        }).png().toFile(imagePath);
-      }
-    }
-
-    if (fs.existsSync(imagePath)) {
-      onProgress?.("thumbnail", i + 1, pageCount);
-      await sharp(imagePath).resize(300).png().toFile(thumbPath);
-      const metadata = await sharp(imagePath).metadata();
-
-      const slideId = uuidv4();
-      if (type === "deck") {
-        db.prepare(
-          `INSERT INTO slides (id, deck_id, slide_number, image_path, thumbnail_path, extracted_text, width, height) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
-        ).run(slideId, parentId, i + 1, imagePath, thumbPath, "", metadata.width || 0, metadata.height || 0);
-      } else {
-        db.prepare(
-          `INSERT INTO exam_pages (id, exam_id, page_number, image_path, extracted_text) VALUES (?, ?, ?, ?, ?)`
-        ).run(slideId, parentId, i + 1, imagePath, "");
-      }
-    }
-
-    // Clean up single page PDF
-    try { fs.unlinkSync(singlePdfPath); } catch {}
-  }
+  await saveAppState(state);
+  return id;
 }
 
 export async function cropSlideRegion(
   slideImagePath: string,
   region: { x: number; y: number; width: number; height: number; slideWidth: number; slideHeight: number }
 ): Promise<Buffer> {
-  const image = sharp(slideImagePath);
+  const imageBuffer = await readAssetBuffer(slideImagePath);
+  const image = sharp(imageBuffer);
   const metadata = await image.metadata();
 
   if (!metadata.width || !metadata.height) {
     throw new Error("Could not read image dimensions");
   }
 
-  // Scale region coordinates to actual image dimensions
   const scaleX = metadata.width / region.slideWidth;
   const scaleY = metadata.height / region.slideHeight;
 

@@ -1,6 +1,5 @@
 import { NextRequest } from "next/server";
-import { getDb } from "@/lib/db";
-import { ExamPage } from "@/lib/types";
+import { loadAppState } from "@/lib/persistence";
 
 export async function GET(
   request: NextRequest,
@@ -8,11 +7,10 @@ export async function GET(
 ) {
   try {
     const { examId } = await params;
-    const db = getDb();
-
-    const pages = db
-      .prepare("SELECT * FROM exam_pages WHERE exam_id = ? ORDER BY page_number ASC")
-      .all(examId) as ExamPage[];
+    const state = await loadAppState();
+    const pages = state.examPages
+      .filter((page) => page.exam_id === examId)
+      .sort((a, b) => a.page_number - b.page_number);
 
     return Response.json(pages);
   } catch (error) {

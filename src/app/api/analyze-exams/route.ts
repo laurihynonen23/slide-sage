@@ -1,46 +1,48 @@
 import { NextRequest } from "next/server";
-import { getDb } from "@/lib/db";
 import { analyzeExamRelevanceWithProvider } from "@/lib/ai-providers";
-import type { Slide, Deck, ExamDocument, ExamPage } from "@/lib/types";
+import { loadAppState, saveAppState } from "@/lib/persistence";
+import { getProviderConfigFromSettings } from "@/lib/provider-settings";
+import type { Deck, ExamDocument, ExamPage, Slide } from "@/lib/types";
 import { v4 as uuidv4 } from "uuid";
-
-function getProviderConfig(db: ReturnType<typeof getDb>) {
-  try {
-    const rows = db.prepare("SELECT key, value FROM settings WHERE key IN ('provider', 'model', 'anthropic_api_key', 'openai_api_key')").all() as { key: string; value: string }[];
-    const s: Record<string, string> = {};
-    for (const r of rows) s[r.key] = r.value;
-    const provider = (s.provider || "anthropic") as "anthropic" | "openai";
-    const apiKey = provider === "anthropic" ? (s.anthropic_api_key || process.env.ANTHROPIC_API_KEY || "") : (s.openai_api_key || process.env.OPENAI_API_KEY || "");
-    const model = s.model || (provider === "anthropic" ? (process.env.AI_MODEL || "claude-sonnet-4-20250514") : "gpt-4o");
-    return { provider, apiKey, model };
-  } catch {
-    return { provider: "anthropic" as const, apiKey: process.env.ANTHROPIC_API_KEY || "", model: process.env.AI_MODEL || "claude-sonnet-4-20250514" };
-  }
-}
 
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json();
     const { deckId } = body as { deckId: string };
 
-    const db = getDb();
-    const deck = db.prepare("SELECT * FROM decks WHERE id = ?").get(deckId) as Deck | undefined;
+    const state = await loadAppState();
+    const deck = state.decks.find((item) => item.id === deckId) as Deck | undefined;
     if (!deck) return Response.json({ error: "Deck not found" }, { status: 404 });
 
-    const slides = db.prepare("SELECT * FROM slides WHERE deck_id = ? ORDER BY slide_number ASC").all(deckId) as Slide[];
-    const slideImages = slides.filter(s => s.image_path).map(s => ({ slideNumber: s.slide_number, imagePath: s.image_path! }));
+    const slides = state.slides
+      .filter((slide) => slide.deck_id === deckId)
+      .sort((a, b) => a.slide_number - b.slide_number) as Slide[];
+    const slideImages = slides
+      .filter((slide) => slide.image_path)
+      .map((slide) => ({ slideNumber: slide.slide_number, imagePath: slide.image_path! }));
 
-    const exams = db.prepare("SELECT * FROM exam_documents ORDER BY created_at DESC").all() as ExamDocument[];
-    if (exams.length === 0) return Response.json({ error: "No exam documents found. Upload exam papers first." }, { status: 400 });
-
-    const examImages: { examTitle: string; pageImages: string[] }[] = [];
-    for (const exam of exams) {
-      const pages = db.prepare("SELECT * FROM exam_pages WHERE exam_id = ? ORDER BY page_number ASC").all(exam.id) as ExamPage[];
-      examImages.push({ examTitle: exam.title, pageImages: pages.filter(p => p.image_path).map(p => p.image_path!) });
+    const exams = [...state.exams].sort((a, b) => b.created_at.localeCompare(a.created_at)) as ExamDocument[];
+    if (exams.length === 0) {
+      return Response.json({ error: "No exam documents found. Upload exam papers first." }, { status: 400 });
     }
 
-    const providerConfig = getProviderConfig(db);
-    const result = await analyzeExamRelevanceWithProvider({ slideImages, examImages, deckTitle: deck.title, providerConfig });
+    const examImages = exams.map((exam) => {
+      const pages = state.examPages
+        .filter((page) => page.exam_id === exam.id)
+        .sort((a, b) => a.page_number - b.page_number) as ExamPage[];
+      return {
+        examTitle: exam.title,
+        pageImages: pages.filter((page) => page.image_path).map((page) => page.image_path!),
+      };
+    });
+
+    const providerConfig = getProviderConfigFromSettings(state.settings);
+    const result = await analyzeExamRelevanceWithProvider({
+      slideImages,
+      examImages,
+      deckTitle: deck.title,
+      providerConfig,
+    });
 
     let analysis;
     try {
@@ -50,15 +52,23 @@ export async function POST(request: NextRequest) {
       analysis = jsonMatch ? JSON.parse(jsonMatch[0]) : {};
     }
 
-    db.prepare("DELETE FROM slide_relevance WHERE deck_id = ?").run(deckId);
+    state.slideRelevance = state.slideRelevance.filter((item) => item.deck_id !== deckId);
     if (analysis.high_priority_slides) {
       for (const item of analysis.high_priority_slides) {
         for (const exam of exams) {
-          db.prepare("INSERT INTO slide_relevance (id, deck_id, exam_id, slide_range, reason, score) VALUES (?, ?, ?, ?, ?, ?)").run(uuidv4(), deckId, exam.id, item.range, item.reason, item.score);
+          state.slideRelevance.push({
+            id: uuidv4(),
+            deck_id: deckId,
+            exam_id: exam.id,
+            slide_range: item.range,
+            reason: item.reason,
+            score: item.score,
+          });
         }
       }
     }
 
+    await saveAppState(state);
     return Response.json(analysis);
   } catch (error) {
     console.error("Exam analysis error:", error);

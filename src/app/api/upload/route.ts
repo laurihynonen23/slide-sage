@@ -1,7 +1,58 @@
 import { NextRequest } from "next/server";
-import { processPdfStreaming, processImage } from "@/lib/pdf-processor";
+import { handleUpload, type HandleUploadBody } from "@vercel/blob/client";
+import { processImage, processPdfStreaming } from "@/lib/pdf-processor";
+import { getUploadMode } from "@/lib/storage-env";
+
+function sseHeaders() {
+  return {
+    "Content-Type": "text/event-stream",
+    "Cache-Control": "no-cache",
+    Connection: "keep-alive",
+  };
+}
+
+export async function GET() {
+  return Response.json({ mode: getUploadMode() });
+}
 
 export async function POST(request: NextRequest) {
+  const uploadMode = getUploadMode();
+  const contentType = request.headers.get("content-type") || "";
+
+  if (contentType.includes("application/json")) {
+    if (uploadMode !== "blob") {
+      return Response.json({ error: "Direct blob uploads are not configured." }, { status: 400 });
+    }
+
+    try {
+      const body = await request.json() as HandleUploadBody;
+      const jsonResponse = await handleUpload({
+        request,
+        body,
+        onBeforeGenerateToken: async () => ({
+          allowedContentTypes: ["application/pdf", "image/png", "image/jpeg"],
+          maximumSizeInBytes: 100 * 1024 * 1024,
+          addRandomSuffix: false,
+          allowOverwrite: true,
+        }),
+      });
+
+      return Response.json(jsonResponse);
+    } catch (error) {
+      return Response.json(
+        { error: error instanceof Error ? error.message : String(error) },
+        { status: 400 }
+      );
+    }
+  }
+
+  if (uploadMode === "unsupported") {
+    return Response.json(
+      { error: "Uploads require Vercel Blob on hosted deployments. Configure BLOB_READ_WRITE_TOKEN first." },
+      { status: 503 }
+    );
+  }
+
   const encoder = new TextEncoder();
 
   const stream = new ReadableStream({
@@ -38,7 +89,7 @@ export async function POST(request: NextRequest) {
             }
           });
         } else if (ext === "png" || ext === "jpg" || ext === "jpeg") {
-          send("progress", JSON.stringify({ stage: "converting", message: `Processing image...` }));
+          send("progress", JSON.stringify({ stage: "converting", message: "Processing image..." }));
           id = await processImage(buffer, filename, type);
         } else {
           send("error", JSON.stringify({ error: "Unsupported file type. Please upload a PDF, PNG, or JPG file." }));
@@ -56,11 +107,5 @@ export async function POST(request: NextRequest) {
     },
   });
 
-  return new Response(stream, {
-    headers: {
-      "Content-Type": "text/event-stream",
-      "Cache-Control": "no-cache",
-      "Connection": "keep-alive",
-    },
-  });
+  return new Response(stream, { headers: sseHeaders() });
 }

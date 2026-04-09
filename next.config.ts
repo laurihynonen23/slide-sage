@@ -1,9 +1,9 @@
 import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
-  serverExternalPackages: ["better-sqlite3", "sharp", "pdf-lib", "@anthropic-ai/sdk", "openai"],
+  serverExternalPackages: ["better-sqlite3", "sharp", "pdf-lib", "@anthropic-ai/sdk", "openai", "@napi-rs/canvas"],
   turbopack: {
-    root: ".",
+    root: process.cwd(),
   },
   experimental: {
     serverActions: {

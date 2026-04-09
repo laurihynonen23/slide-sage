@@ -1,13 +1,14 @@
 /**
  * AI provider abstraction — supports Anthropic Claude and OpenAI (GPT-4o etc.)
- * SERVER-ONLY: uses fs
+ * SERVER-ONLY: reads assets from durable storage
  */
 
-import fs from "fs";
 import type { DifficultyMode, ContextMode, ExplanationStyle } from "./types";
 export type { AIProvider, ProviderConfig } from "./ai-config";
 export { ANTHROPIC_MODELS, OPENAI_MODELS } from "./ai-config";
 import type { AIProvider, ProviderConfig } from "./ai-config";
+import type { MessageParam as AnthropicMessageParam } from "@anthropic-ai/sdk/resources";
+import { readAssetBuffer } from "./persistence";
 
 const SYSTEM_PROMPT = `You are a focused, expert study tutor helping a student prepare for exams by analyzing their lecture slides and past exam papers.
 
@@ -65,6 +66,14 @@ export interface AIChatOptions {
   language?: "en" | "fi";
 }
 
+async function readAssetBase64(assetPath: string): Promise<string | null> {
+  try {
+    return (await readAssetBuffer(assetPath)).toString("base64");
+  } catch {
+    return null;
+  }
+}
+
 export async function* streamChatWithProvider(options: AIChatOptions): AsyncGenerator<string> {
   const config = options.providerConfig;
 
@@ -104,11 +113,11 @@ async function* streamAnthropic(
   const Anthropic = (await import("@anthropic-ai/sdk")).default;
   const client = new Anthropic({ apiKey });
 
-  const contentBlocks: import("@anthropic-ai/sdk").MessageParam["content"] = [];
+  const contentBlocks: AnthropicMessageParam["content"] = [];
 
   for (const slide of options.slideImages) {
-    if (fs.existsSync(slide.imagePath)) {
-      const base64 = fs.readFileSync(slide.imagePath).toString("base64");
+    const base64 = await readAssetBase64(slide.imagePath);
+    if (base64) {
       (contentBlocks as unknown[]).push({ type: "text", text: `--- Slide ${slide.slideNumber} ---` });
       (contentBlocks as unknown[]).push({ type: "image", source: { type: "base64", media_type: "image/png", data: base64 } });
     }
@@ -128,20 +137,19 @@ async function* streamAnthropic(
     for (const exam of options.examContext) {
       (contentBlocks as unknown[]).push({ type: "text", text: `--- Past Exam: "${exam.examTitle}" ---` });
       for (const p of exam.pageImages.slice(0, 10)) {
-        if (fs.existsSync(p)) {
-          (contentBlocks as unknown[]).push({ type: "image", source: { type: "base64", media_type: "image/png", data: fs.readFileSync(p).toString("base64") } });
-        }
+        const base64 = await readAssetBase64(p);
+        if (base64) (contentBlocks as unknown[]).push({ type: "image", source: { type: "base64", media_type: "image/png", data: base64 } });
       }
     }
   }
 
-  const apiMessages: import("@anthropic-ai/sdk").MessageParam[] = [];
+  const apiMessages: AnthropicMessageParam[] = [];
   for (let i = 0; i < options.messages.length - 1; i++) {
     apiMessages.push({ role: options.messages[i].role, content: options.messages[i].content });
   }
   const last = options.messages[options.messages.length - 1];
   if (last) (contentBlocks as unknown[]).push({ type: "text", text: last.content });
-  apiMessages.push({ role: "user", content: contentBlocks as import("@anthropic-ai/sdk").MessageParam["content"] });
+  apiMessages.push({ role: "user", content: contentBlocks as AnthropicMessageParam["content"] });
 
   const stream = client.messages.stream({ model, max_tokens: 4096, system: systemContent, messages: apiMessages });
   for await (const event of stream) {
@@ -174,8 +182,8 @@ async function* streamOpenAI(
   const userContent: import("openai").OpenAI.ChatCompletionContentPart[] = [];
 
   for (const slide of options.slideImages) {
-    if (fs.existsSync(slide.imagePath)) {
-      const base64 = fs.readFileSync(slide.imagePath).toString("base64");
+    const base64 = await readAssetBase64(slide.imagePath);
+    if (base64) {
       userContent.push({ type: "text", text: `--- Slide ${slide.slideNumber} ---` });
       userContent.push({ type: "image_url", image_url: { url: `data:image/png;base64,${base64}`, detail: "high" } });
     }
@@ -195,9 +203,8 @@ async function* streamOpenAI(
     for (const exam of options.examContext) {
       userContent.push({ type: "text", text: `--- Past Exam: "${exam.examTitle}" ---` });
       for (const p of exam.pageImages.slice(0, 10)) {
-        if (fs.existsSync(p)) {
-          userContent.push({ type: "image_url", image_url: { url: `data:image/png;base64,${fs.readFileSync(p).toString("base64")}` } });
-        }
+        const base64 = await readAssetBase64(p);
+        if (base64) userContent.push({ type: "image_url", image_url: { url: `data:image/png;base64,${base64}` } });
       }
     }
   }
@@ -239,22 +246,24 @@ export async function generateQuizWithProvider(options: {
     const client = new Anthropic({ apiKey });
     const blocks: unknown[] = [];
     for (const slide of options.slideImages) {
-      if (fs.existsSync(slide.imagePath)) {
+      const base64 = await readAssetBase64(slide.imagePath);
+      if (base64) {
         blocks.push({ type: "text", text: `--- Slide ${slide.slideNumber} ---` });
-        blocks.push({ type: "image", source: { type: "base64", media_type: "image/png", data: fs.readFileSync(slide.imagePath).toString("base64") } });
+        blocks.push({ type: "image", source: { type: "base64", media_type: "image/png", data: base64 } });
       }
     }
     blocks.push({ type: "text", text: prompt });
-    const resp = await client.messages.create({ model, max_tokens: 4096, system: "You are a quiz generator. Return only valid JSON.", messages: [{ role: "user", content: blocks as import("@anthropic-ai/sdk").MessageParam["content"] }] });
+    const resp = await client.messages.create({ model, max_tokens: 4096, system: "You are a quiz generator. Return only valid JSON.", messages: [{ role: "user", content: blocks as AnthropicMessageParam["content"] }] });
     return (resp.content.find(b => b.type === "text") as { type: "text"; text: string } | undefined)?.text ?? "[]";
   } else {
     const OpenAI = (await import("openai")).default;
     const client = new OpenAI({ apiKey });
     const userContent: import("openai").OpenAI.ChatCompletionContentPart[] = [];
     for (const slide of options.slideImages) {
-      if (fs.existsSync(slide.imagePath)) {
+      const base64 = await readAssetBase64(slide.imagePath);
+      if (base64) {
         userContent.push({ type: "text", text: `--- Slide ${slide.slideNumber} ---` });
-        userContent.push({ type: "image_url", image_url: { url: `data:image/png;base64,${fs.readFileSync(slide.imagePath).toString("base64")}`, detail: "high" } });
+        userContent.push({ type: "image_url", image_url: { url: `data:image/png;base64,${base64}`, detail: "high" } });
       }
     }
     userContent.push({ type: "text", text: prompt });
@@ -283,34 +292,38 @@ export async function analyzeExamRelevanceWithProvider(options: {
     const client = new Anthropic({ apiKey });
     const blocks: unknown[] = [];
     for (const slide of slidesSample) {
-      if (fs.existsSync(slide.imagePath)) {
+      const base64 = await readAssetBase64(slide.imagePath);
+      if (base64) {
         blocks.push({ type: "text", text: `--- Slide ${slide.slideNumber} ---` });
-        blocks.push({ type: "image", source: { type: "base64", media_type: "image/png", data: fs.readFileSync(slide.imagePath).toString("base64") } });
+        blocks.push({ type: "image", source: { type: "base64", media_type: "image/png", data: base64 } });
       }
     }
     for (const exam of options.examImages) {
       blocks.push({ type: "text", text: `--- Past Exam: "${exam.examTitle}" ---` });
       for (const p of exam.pageImages.slice(0, 10)) {
-        if (fs.existsSync(p)) blocks.push({ type: "image", source: { type: "base64", media_type: "image/png", data: fs.readFileSync(p).toString("base64") } });
+        const base64 = await readAssetBase64(p);
+        if (base64) blocks.push({ type: "image", source: { type: "base64", media_type: "image/png", data: base64 } });
       }
     }
     blocks.push({ type: "text", text: analysisPrompt });
-    const resp = await client.messages.create({ model, max_tokens: 4096, system: "You are an exam preparation analyst. Return only valid JSON.", messages: [{ role: "user", content: blocks as import("@anthropic-ai/sdk").MessageParam["content"] }] });
+    const resp = await client.messages.create({ model, max_tokens: 4096, system: "You are an exam preparation analyst. Return only valid JSON.", messages: [{ role: "user", content: blocks as AnthropicMessageParam["content"] }] });
     return (resp.content.find(b => b.type === "text") as { type: "text"; text: string } | undefined)?.text ?? "{}";
   } else {
     const OpenAI = (await import("openai")).default;
     const client = new OpenAI({ apiKey });
     const userContent: import("openai").OpenAI.ChatCompletionContentPart[] = [];
     for (const slide of slidesSample) {
-      if (fs.existsSync(slide.imagePath)) {
+      const base64 = await readAssetBase64(slide.imagePath);
+      if (base64) {
         userContent.push({ type: "text", text: `--- Slide ${slide.slideNumber} ---` });
-        userContent.push({ type: "image_url", image_url: { url: `data:image/png;base64,${fs.readFileSync(slide.imagePath).toString("base64")}`, detail: "high" } });
+        userContent.push({ type: "image_url", image_url: { url: `data:image/png;base64,${base64}`, detail: "high" } });
       }
     }
     for (const exam of options.examImages) {
       userContent.push({ type: "text", text: `--- Past Exam: "${exam.examTitle}" ---` });
       for (const p of exam.pageImages.slice(0, 5)) {
-        if (fs.existsSync(p)) userContent.push({ type: "image_url", image_url: { url: `data:image/png;base64,${fs.readFileSync(p).toString("base64")}` } });
+        const base64 = await readAssetBase64(p);
+        if (base64) userContent.push({ type: "image_url", image_url: { url: `data:image/png;base64,${base64}` } });
       }
     }
     userContent.push({ type: "text", text: analysisPrompt });

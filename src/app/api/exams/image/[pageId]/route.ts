@@ -1,7 +1,5 @@
 import { NextRequest } from "next/server";
-import { getDb } from "@/lib/db";
-import { ExamPage } from "@/lib/types";
-import fs from "fs";
+import { loadAppState, readAssetBuffer } from "@/lib/persistence";
 
 export async function GET(
   request: NextRequest,
@@ -9,26 +7,19 @@ export async function GET(
 ) {
   try {
     const { pageId } = await params;
-    const db = getDb();
-
-    const page = db
-      .prepare("SELECT * FROM exam_pages WHERE id = ?")
-      .get(pageId) as ExamPage | undefined;
+    const state = await loadAppState();
+    const page = state.examPages.find((item) => item.id === pageId);
 
     if (!page || !page.image_path) {
       return Response.json({ error: "Exam page not found" }, { status: 404 });
     }
 
-    if (!fs.existsSync(page.image_path)) {
-      return Response.json({ error: "Image file not found" }, { status: 404 });
-    }
+    const buffer = await readAssetBuffer(page.image_path);
 
-    const buffer = fs.readFileSync(page.image_path);
-
-    return new Response(buffer, {
+    return new Response(new Uint8Array(buffer), {
       headers: {
         "Content-Type": "image/png",
-        "Cache-Control": "public, max-age=31536000",
+        "Cache-Control": "public, max-age=31536000, immutable",
       },
     });
   } catch (error) {

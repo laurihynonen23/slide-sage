@@ -1,7 +1,5 @@
 import { NextRequest } from "next/server";
-import { getDb } from "@/lib/db";
-import { Slide } from "@/lib/types";
-import fs from "fs";
+import { loadAppState, readAssetBuffer } from "@/lib/persistence";
 
 export async function GET(
   request: NextRequest,
@@ -9,26 +7,19 @@ export async function GET(
 ) {
   try {
     const { slideId } = await params;
-    const db = getDb();
-
-    const slide = db
-      .prepare("SELECT * FROM slides WHERE id = ?")
-      .get(slideId) as Slide | undefined;
+    const state = await loadAppState();
+    const slide = state.slides.find((item) => item.id === slideId);
 
     if (!slide || !slide.image_path) {
       return Response.json({ error: "Slide not found" }, { status: 404 });
     }
 
-    if (!fs.existsSync(slide.image_path)) {
-      return Response.json({ error: "Image file not found" }, { status: 404 });
-    }
+    const buffer = await readAssetBuffer(slide.image_path);
 
-    const buffer = fs.readFileSync(slide.image_path);
-
-    return new Response(buffer, {
+    return new Response(new Uint8Array(buffer), {
       headers: {
         "Content-Type": "image/png",
-        "Cache-Control": "public, max-age=31536000",
+        "Cache-Control": "public, max-age=31536000, immutable",
       },
     });
   } catch (error) {

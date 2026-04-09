@@ -1,35 +1,40 @@
 import { NextRequest } from "next/server";
-import { getDb } from "@/lib/db";
+import {
+  loadAppState,
+  saveAppState,
+} from "@/lib/persistence";
+import { canPersistApiKeys, getUploadMode, isBlobStorageEnabled } from "@/lib/storage-env";
+import { getDefaultProvider } from "@/lib/provider-settings";
 
-// Ensure the settings table exists
-function ensureSettingsTable() {
-  const db = getDb();
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS settings (
-      key TEXT PRIMARY KEY,
-      value TEXT NOT NULL
-    )
-  `);
-  return db;
+function maskKey(value: string | undefined): string {
+  return value ? `...${value.slice(-4)}` : "";
 }
 
 export async function GET() {
   try {
-    const db = ensureSettingsTable();
-    const rows = db.prepare("SELECT key, value FROM settings").all() as { key: string; value: string }[];
-    const settings: Record<string, string> = {};
-    for (const row of rows) {
-      settings[row.key] = row.value;
-    }
-    // Never expose actual key values — just whether they're set
+    const state = await loadAppState();
+    const settings = state.settings;
+    const allowApiKeyPersistence = canPersistApiKeys();
+    const provider = getDefaultProvider(settings);
+
+    const anthropicKey = allowApiKeyPersistence
+      ? (settings.anthropic_api_key || process.env.ANTHROPIC_API_KEY || "")
+      : (process.env.ANTHROPIC_API_KEY || "");
+    const openaiKey = allowApiKeyPersistence
+      ? (settings.openai_api_key || process.env.OPENAI_API_KEY || "")
+      : (process.env.OPENAI_API_KEY || "");
+
     return Response.json({
-      provider: settings.provider || "anthropic",
-      model: settings.model || "",
-      hasAnthropicKey: !!(settings.anthropic_api_key || process.env.ANTHROPIC_API_KEY),
-      hasOpenAIKey: !!(settings.openai_api_key || process.env.OPENAI_API_KEY),
-      // Mask keys: show last 4 chars only
-      anthropicKeyHint: settings.anthropic_api_key ? `...${settings.anthropic_api_key.slice(-4)}` : (process.env.ANTHROPIC_API_KEY ? `...${process.env.ANTHROPIC_API_KEY.slice(-4)}` : ""),
-      openaiKeyHint: settings.openai_api_key ? `...${settings.openai_api_key.slice(-4)}` : (process.env.OPENAI_API_KEY ? `...${process.env.OPENAI_API_KEY.slice(-4)}` : ""),
+      provider,
+      model: settings.model || process.env.AI_MODEL || "",
+      hasAnthropicKey: Boolean(anthropicKey),
+      hasOpenAIKey: Boolean(openaiKey),
+      anthropicKeyHint: maskKey(anthropicKey),
+      openaiKeyHint: maskKey(openaiKey),
+      canPersistApiKeys: allowApiKeyPersistence,
+      apiKeyStorage: allowApiKeyPersistence ? "local" : "environment",
+      storageBackend: isBlobStorageEnabled() ? "vercel-blob" : "local",
+      uploadMode: getUploadMode(),
     });
   } catch (error) {
     console.error("Settings GET error:", error);
@@ -39,7 +44,7 @@ export async function GET() {
 
 export async function POST(request: NextRequest) {
   try {
-    const db = ensureSettingsTable();
+    const state = await loadAppState();
     const body = await request.json() as {
       provider?: string;
       model?: string;
@@ -47,20 +52,27 @@ export async function POST(request: NextRequest) {
       openaiApiKey?: string;
     };
 
-    const upsert = db.prepare("INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value");
+    if (body.provider) state.settings.provider = body.provider;
+    if (body.model) state.settings.model = body.model;
 
-    if (body.provider) upsert.run("provider", body.provider);
-    if (body.model) upsert.run("model", body.model);
-    if (body.anthropicApiKey !== undefined) {
-      if (body.anthropicApiKey) upsert.run("anthropic_api_key", body.anthropicApiKey);
-      else db.prepare("DELETE FROM settings WHERE key = 'anthropic_api_key'").run();
-    }
-    if (body.openaiApiKey !== undefined) {
-      if (body.openaiApiKey) upsert.run("openai_api_key", body.openaiApiKey);
-      else db.prepare("DELETE FROM settings WHERE key = 'openai_api_key'").run();
+    if (canPersistApiKeys()) {
+      if (body.anthropicApiKey !== undefined) {
+        if (body.anthropicApiKey) state.settings.anthropic_api_key = body.anthropicApiKey;
+        else delete state.settings.anthropic_api_key;
+      }
+
+      if (body.openaiApiKey !== undefined) {
+        if (body.openaiApiKey) state.settings.openai_api_key = body.openaiApiKey;
+        else delete state.settings.openai_api_key;
+      }
     }
 
-    return Response.json({ ok: true });
+    await saveAppState(state);
+
+    return Response.json({
+      ok: true,
+      persistedApiKeys: canPersistApiKeys(),
+    });
   } catch (error) {
     console.error("Settings POST error:", error);
     return Response.json({ error: "Failed to save settings" }, { status: 500 });

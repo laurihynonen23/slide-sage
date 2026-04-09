@@ -1,6 +1,7 @@
 "use client";
 
 import { useReducer, useEffect, useCallback, useState, useRef } from "react";
+import { upload } from "@vercel/blob/client";
 import {
   BookOpen,
   FileText,
@@ -30,11 +31,13 @@ export default function Home() {
   const [state, dispatch] = useReducer(appReducer, initialState);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
+  const [uploadMode, setUploadMode] = useState<"blob" | "server" | "unsupported">("server");
   const uploadAbortRef = useRef<AbortController | null>(null);
 
   useEffect(() => {
     fetchDecks();
     fetchExams();
+    fetchUploadMode();
   }, []);
 
   useEffect(() => {
@@ -47,7 +50,9 @@ export default function Home() {
     try {
       const res = await fetch("/api/decks");
       const data = await res.json();
-      dispatch({ type: "SET_DECKS", decks: data });
+      if (Array.isArray(data)) {
+        dispatch({ type: "SET_DECKS", decks: data });
+      }
     } catch (err) {
       console.error("Failed to fetch decks:", err);
     }
@@ -73,6 +78,69 @@ export default function Home() {
     }
   };
 
+  const fetchUploadMode = async () => {
+    try {
+      const res = await fetch("/api/upload");
+      const data = await res.json();
+      if (data.mode === "blob" || data.mode === "server" || data.mode === "unsupported") {
+        setUploadMode(data.mode);
+      }
+    } catch (err) {
+      console.error("Failed to fetch upload mode:", err);
+    }
+  };
+
+  const consumeProcessingStream = async (response: Response, type: "deck" | "exam") => {
+    if (!response.ok || !response.body) {
+      const errText = await response.text().catch(() => "Unknown error");
+      throw new Error(errText || "Upload failed");
+    }
+
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let completedData: { id: string; type: string } | null = null;
+    let buffer = "";
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split("\n");
+      buffer = lines.pop() || "";
+
+      for (const line of lines) {
+        if (!line.startsWith("data: ")) continue;
+
+        try {
+          const payload = JSON.parse(line.slice(6));
+          if (payload.message) {
+            dispatch({ type: "SET_UPLOADING", isUploading: true, progress: payload.message });
+          }
+          if (payload.id) {
+            completedData = payload;
+          }
+          if (payload.error) {
+            throw new Error(payload.error);
+          }
+        } catch (e) {
+          if ((e as Error).message !== "Unexpected end of JSON input") {
+            throw e;
+          }
+        }
+      }
+    }
+
+    if (completedData) {
+      if (type === "deck") {
+        await fetchDecks();
+        dispatch({ type: "SET_ACTIVE_DECK", deckId: completedData.id });
+      } else {
+        await fetchExams();
+      }
+    }
+  };
+
   const handleCancelUpload = useCallback(() => {
     uploadAbortRef.current?.abort();
     dispatch({ type: "SET_UPLOADING", isUploading: false });
@@ -84,58 +152,51 @@ export default function Home() {
     dispatch({ type: "SET_UPLOADING", isUploading: true, progress: `Uploading ${file.name}...` });
 
     try {
-      const formData = new FormData();
-      formData.append("file", file);
-      formData.append("type", type);
+      if (uploadMode === "blob") {
+        const safeName = file.name.replace(/[^\w.-]+/g, "_");
+        const pathname = `incoming/${type}/${crypto.randomUUID()}-${safeName}`;
 
-      const res = await fetch("/api/upload", {
-        method: "POST",
-        body: formData,
-        signal: controller.signal,
-      });
+        const blob = await upload(pathname, file, {
+          access: "private",
+          handleUploadUrl: "/api/upload",
+          multipart: file.size > 8 * 1024 * 1024,
+          contentType: file.type || undefined,
+          abortSignal: controller.signal,
+          onUploadProgress: ({ percentage }) => {
+            dispatch({
+              type: "SET_UPLOADING",
+              isUploading: true,
+              progress: `Uploading ${file.name} (${Math.round(percentage)}%)...`,
+            });
+          },
+        });
 
-      if (!res.ok || !res.body) throw new Error("Upload failed");
+        dispatch({ type: "SET_UPLOADING", isUploading: true, progress: `Processing ${file.name}...` });
+        const processResponse = await fetch("/api/process-upload", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            pathname: blob.pathname,
+            originalFilename: file.name,
+            type,
+          }),
+          signal: controller.signal,
+        });
+        await consumeProcessingStream(processResponse, type);
+      } else if (uploadMode === "server") {
+        const formData = new FormData();
+        formData.append("file", file);
+        formData.append("type", type);
 
-      const reader = res.body.getReader();
-      const decoder = new TextDecoder();
-      let completedData: { id: string; type: string } | null = null;
-      let buffer = "";
+        const res = await fetch("/api/upload", {
+          method: "POST",
+          body: formData,
+          signal: controller.signal,
+        });
 
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-
-        buffer += decoder.decode(value, { stream: true });
-        const lines = buffer.split("\n");
-        buffer = lines.pop() || "";
-
-        for (const line of lines) {
-          if (line.startsWith("data: ")) {
-            try {
-              const payload = JSON.parse(line.slice(6));
-              if (payload.message) {
-                dispatch({ type: "SET_UPLOADING", isUploading: true, progress: payload.message });
-              }
-              if (payload.id) {
-                completedData = payload;
-              }
-              if (payload.error) {
-                throw new Error(payload.error);
-              }
-            } catch (e) {
-              if ((e as Error).message !== "Unexpected end of JSON input") throw e;
-            }
-          }
-        }
-      }
-
-      if (completedData) {
-        if (type === "deck") {
-          await fetchDecks();
-          dispatch({ type: "SET_ACTIVE_DECK", deckId: completedData.id });
-        } else {
-          await fetchExams();
-        }
+        await consumeProcessingStream(res, type);
+      } else {
+        throw new Error("Hosted uploads require Vercel Blob. Configure BLOB_READ_WRITE_TOKEN in Vercel first.");
       }
     } catch (err: unknown) {
       if ((err as Error).name !== "AbortError") {
@@ -145,7 +206,7 @@ export default function Home() {
       uploadAbortRef.current = null;
       dispatch({ type: "SET_UPLOADING", isUploading: false });
     }
-  }, []);
+  }, [uploadMode]);
 
   const handleDeleteDeck = async (deckId: string) => {
     try {
@@ -636,9 +697,13 @@ function TopBar({
 }
 
 function UploadProgressBar({ progress }: { progress: string }) {
-  // Parse "Processing thumbnails (12/36)..." to get percentage
-  const match = progress.match(/\((\d+)\/(\d+)\)/);
-  const pct = match ? Math.round((parseInt(match[1]) / parseInt(match[2])) * 100) : null;
+  const ratioMatch = progress.match(/\((\d+)\/(\d+)\)/);
+  const percentMatch = progress.match(/\((\d+)%\)/);
+  const pct = ratioMatch
+    ? Math.round((parseInt(ratioMatch[1]) / parseInt(ratioMatch[2])) * 100)
+    : percentMatch
+      ? parseInt(percentMatch[1])
+      : null;
 
   // Indeterminate during uploading/converting stages
   if (pct === null) {

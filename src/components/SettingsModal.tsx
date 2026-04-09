@@ -19,6 +19,10 @@ interface SettingsState {
   hasOpenAIKey: boolean;
   anthropicKeyHint: string;
   openaiKeyHint: string;
+  canPersistApiKeys: boolean;
+  apiKeyStorage: "local" | "environment";
+  storageBackend: "local" | "vercel-blob";
+  uploadMode: "blob" | "server" | "unsupported";
 }
 
 export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
@@ -29,6 +33,10 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
     hasOpenAIKey: false,
     anthropicKeyHint: "",
     openaiKeyHint: "",
+    canPersistApiKeys: true,
+    apiKeyStorage: "local",
+    storageBackend: "local",
+    uploadMode: "server",
   });
   const [anthropicKey, setAnthropicKey] = useState("");
   const [openaiKey, setOpenaiKey] = useState("");
@@ -58,8 +66,8 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
         body: JSON.stringify({
           provider: settings.provider,
           model: activeModel,
-          anthropicApiKey: anthropicKey || undefined,
-          openaiApiKey: openaiKey || undefined,
+          anthropicApiKey: settings.canPersistApiKeys ? (anthropicKey || undefined) : undefined,
+          openaiApiKey: settings.canPersistApiKeys ? (openaiKey || undefined) : undefined,
         }),
       });
       // Refetch to update hints
@@ -177,11 +185,17 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
                 type={showAnthropicKey ? "text" : "password"}
                 value={anthropicKey}
                 onChange={e => setAnthropicKey(e.target.value)}
-                placeholder={settings.hasAnthropicKey ? "Enter new key to replace..." : "sk-ant-..."}
-                className="w-full px-3.5 py-2.5 rounded-xl border border-zinc-200 dark:border-zinc-700 bg-zinc-50 dark:bg-zinc-800 text-sm text-zinc-800 dark:text-zinc-200 placeholder:text-zinc-400 focus:outline-none focus:ring-2 focus:ring-blue-500/30 focus:border-blue-400 pr-10"
+                disabled={!settings.canPersistApiKeys}
+                placeholder={
+                  settings.canPersistApiKeys
+                    ? (settings.hasAnthropicKey ? "Enter new key to replace..." : "sk-ant-...")
+                    : "Set ANTHROPIC_API_KEY in your deployment environment"
+                }
+                className="w-full px-3.5 py-2.5 rounded-xl border border-zinc-200 dark:border-zinc-700 bg-zinc-50 dark:bg-zinc-800 text-sm text-zinc-800 dark:text-zinc-200 placeholder:text-zinc-400 focus:outline-none focus:ring-2 focus:ring-blue-500/30 focus:border-blue-400 pr-10 disabled:opacity-60 disabled:cursor-not-allowed"
               />
               <button
                 onClick={() => setShowAnthropicKey(s => !s)}
+                disabled={!settings.canPersistApiKeys}
                 className="absolute right-3 top-1/2 -translate-y-1/2 text-zinc-400 hover:text-zinc-600"
               >
                 {showAnthropicKey ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
@@ -200,11 +214,17 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
                 type={showOpenAIKey ? "text" : "password"}
                 value={openaiKey}
                 onChange={e => setOpenaiKey(e.target.value)}
-                placeholder={settings.hasOpenAIKey ? "Enter new key to replace..." : "sk-..."}
-                className="w-full px-3.5 py-2.5 rounded-xl border border-zinc-200 dark:border-zinc-700 bg-zinc-50 dark:bg-zinc-800 text-sm text-zinc-800 dark:text-zinc-200 placeholder:text-zinc-400 focus:outline-none focus:ring-2 focus:ring-blue-500/30 focus:border-blue-400 pr-10"
+                disabled={!settings.canPersistApiKeys}
+                placeholder={
+                  settings.canPersistApiKeys
+                    ? (settings.hasOpenAIKey ? "Enter new key to replace..." : "sk-...")
+                    : "Set OPENAI_API_KEY in your deployment environment"
+                }
+                className="w-full px-3.5 py-2.5 rounded-xl border border-zinc-200 dark:border-zinc-700 bg-zinc-50 dark:bg-zinc-800 text-sm text-zinc-800 dark:text-zinc-200 placeholder:text-zinc-400 focus:outline-none focus:ring-2 focus:ring-blue-500/30 focus:border-blue-400 pr-10 disabled:opacity-60 disabled:cursor-not-allowed"
               />
               <button
                 onClick={() => setShowOpenAIKey(s => !s)}
+                disabled={!settings.canPersistApiKeys}
                 className="absolute right-3 top-1/2 -translate-y-1/2 text-zinc-400 hover:text-zinc-600"
               >
                 {showOpenAIKey ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
@@ -212,8 +232,13 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
             </div>
           </div>
 
-          <p className="text-xs text-zinc-400">
-            API keys are stored locally in the app database and never sent anywhere except the respective AI provider.
+          <p className="text-xs text-zinc-400 leading-relaxed">
+            {settings.canPersistApiKeys
+              ? "API keys are stored in local app data and only sent to the selected AI provider."
+              : "On hosted deployments, API keys must be set in environment variables. This public app no longer writes secrets into shared storage."}
+          </p>
+          <p className="text-xs text-zinc-400 leading-relaxed">
+            Storage backend: {settings.storageBackend === "vercel-blob" ? "Vercel Blob" : "Local filesystem"}.
           </p>
         </div>
 

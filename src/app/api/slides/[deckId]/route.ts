@@ -1,6 +1,5 @@
 import { NextRequest } from "next/server";
-import { getDb } from "@/lib/db";
-import { Slide } from "@/lib/types";
+import { loadAppState } from "@/lib/persistence";
 
 export async function GET(
   request: NextRequest,
@@ -8,11 +7,10 @@ export async function GET(
 ) {
   try {
     const { deckId } = await params;
-    const db = getDb();
-
-    const slides = db
-      .prepare("SELECT * FROM slides WHERE deck_id = ? ORDER BY slide_number ASC")
-      .all(deckId) as Slide[];
+    const state = await loadAppState();
+    const slides = state.slides
+      .filter((slide) => slide.deck_id === deckId)
+      .sort((a, b) => a.slide_number - b.slide_number);
 
     return Response.json(slides);
   } catch (error) {
