@@ -43,16 +43,25 @@ async function getPdfRuntime() {
     pdfRuntimePromise = (async () => {
       const canvas = await import("@napi-rs/canvas");
       const pdfjs = await import("pdfjs-dist/legacy/build/pdf.mjs");
+      const pdfWorker = await import("pdfjs-dist/legacy/build/pdf.worker.mjs");
 
       const globalScope = globalThis as unknown as {
         DOMMatrix?: typeof canvas.DOMMatrix;
         ImageData?: typeof canvas.ImageData;
         Path2D?: typeof canvas.Path2D;
+        pdfjsWorker?: {
+          WorkerMessageHandler: unknown;
+        };
       };
 
       if (!globalScope.DOMMatrix) globalScope.DOMMatrix = canvas.DOMMatrix;
       if (!globalScope.ImageData) globalScope.ImageData = canvas.ImageData;
       if (!globalScope.Path2D) globalScope.Path2D = canvas.Path2D;
+      if (!globalScope.pdfjsWorker) {
+        globalScope.pdfjsWorker = {
+          WorkerMessageHandler: pdfWorker.WorkerMessageHandler,
+        };
+      }
 
       return {
         createCanvas: canvas.createCanvas,
