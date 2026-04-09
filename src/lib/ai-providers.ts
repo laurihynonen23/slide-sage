@@ -28,7 +28,16 @@ Behavioral guidelines:
 - When explaining formulas, break down each component
 - When explaining diagrams, describe the relationships and flow
 - If asked about content not in the provided slides, say so honestly
-- Never give vague generic study advice — be specific to the material`;
+- Never give vague generic study advice — be specific to the material
+
+Formatting guidelines:
+- Write in clean Markdown that reads well in a chat interface
+- Prefer short sections with a clear lead sentence
+- When presenting multiple points, use real Markdown bullet points or numbered lists
+- Do not put each clause or fragment on its own line unless it is an actual list
+- Group related ideas into normal paragraphs instead of note-like line breaks
+- Use **bold** only for the most important terms or conclusions
+- Use tables only when comparing options, terms, or categories is genuinely helpful`;
 
 function getDifficultyInstruction(difficulty: DifficultyMode): string {
   switch (difficulty) {

@@ -542,7 +542,7 @@ export default function Home() {
                   animate={{ opacity: 1, scale: 1, y: 0 }}
                   exit={{ opacity: 0, scale: 0.95, y: 20 }}
                   transition={{ duration: 0.2 }}
-                  className="w-[90vw] max-w-4xl h-[85vh] bg-white dark:bg-zinc-950 rounded-2xl shadow-2xl overflow-hidden flex flex-col"
+                  className="w-[94vw] max-w-6xl h-[88vh] bg-white dark:bg-zinc-950 rounded-2xl shadow-2xl overflow-hidden flex flex-col"
                 >
                   <AIChatPanel
                     messages={state.chatMessages}
