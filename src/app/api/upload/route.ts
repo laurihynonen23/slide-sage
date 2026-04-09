@@ -110,7 +110,8 @@ export async function POST(request: NextRequest) {
         send("complete", JSON.stringify({ id, type }));
       } catch (error) {
         console.error("Upload error:", error);
-        send("error", JSON.stringify({ error: "Failed to process file" }));
+        const message = error instanceof Error ? error.message : String(error);
+        send("error", JSON.stringify({ error: message || "Failed to process file" }));
       } finally {
         controller.close();
       }
