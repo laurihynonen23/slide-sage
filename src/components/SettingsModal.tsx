@@ -20,9 +20,12 @@ interface SettingsState {
   anthropicKeyHint: string;
   openaiKeyHint: string;
   canPersistApiKeys: boolean;
-  apiKeyStorage: "local" | "environment";
+  apiKeyStorage: "local" | "workspace" | "environment";
   storageBackend: "local" | "vercel-blob";
   uploadMode: "blob" | "server" | "unsupported";
+  workspaceId: string;
+  legacySharedLibraryAvailable: boolean;
+  hasPersonalData: boolean;
 }
 
 export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
@@ -37,6 +40,9 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
     apiKeyStorage: "local",
     storageBackend: "local",
     uploadMode: "server",
+    workspaceId: "",
+    legacySharedLibraryAvailable: false,
+    hasPersonalData: false,
   });
   const [anthropicKey, setAnthropicKey] = useState("");
   const [openaiKey, setOpenaiKey] = useState("");
@@ -234,11 +240,21 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
 
           <p className="text-xs text-zinc-400 leading-relaxed">
             {settings.canPersistApiKeys
-              ? "API keys are stored in local app data and only sent to the selected AI provider."
+              ? settings.apiKeyStorage === "workspace"
+                ? "API keys are stored in your private workspace and only used for your own uploads and chats."
+                : "API keys are stored in local app data and only sent to the selected AI provider."
               : "On hosted deployments, API keys must be set in environment variables. This public app no longer writes secrets into shared storage."}
           </p>
           <p className="text-xs text-zinc-400 leading-relaxed">
             Storage backend: {settings.storageBackend === "vercel-blob" ? "Vercel Blob" : "Local filesystem"}.
+          </p>
+          {settings.workspaceId && (
+            <p className="text-xs text-zinc-400 leading-relaxed">
+              Workspace ID: <span className="font-mono">{settings.workspaceId.slice(0, 8)}</span>
+            </p>
+          )}
+          <p className="text-xs text-zinc-400 leading-relaxed">
+            This workspace stays with this browser. If you clear cookies or switch devices, the app will create a new workspace.
           </p>
         </div>
 

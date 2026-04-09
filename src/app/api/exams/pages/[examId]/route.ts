@@ -1,5 +1,6 @@
 import { NextRequest } from "next/server";
 import { loadAppState } from "@/lib/persistence";
+import { getWorkspaceId } from "@/lib/user-session";
 
 export async function GET(
   request: NextRequest,
@@ -7,7 +8,8 @@ export async function GET(
 ) {
   try {
     const { examId } = await params;
-    const state = await loadAppState();
+    const workspaceId = await getWorkspaceId();
+    const state = await loadAppState(workspaceId);
     const pages = state.examPages
       .filter((page) => page.exam_id === examId)
       .sort((a, b) => a.page_number - b.page_number);

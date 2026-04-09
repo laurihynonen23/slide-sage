@@ -1,12 +1,15 @@
 import { NextRequest } from "next/server";
-import { deleteAsset, readAssetBuffer } from "@/lib/persistence";
+import { deleteAsset, incomingAssetPrefix, readAssetBuffer } from "@/lib/persistence";
 import { processImage, processPdfStreaming } from "@/lib/pdf-processor";
 import { getUploadMode } from "@/lib/storage-env";
+import { getWorkspaceId } from "@/lib/user-session";
 
 export async function POST(request: NextRequest) {
   if (getUploadMode() !== "blob") {
     return Response.json({ error: "Blob processing is only available when Vercel Blob is configured." }, { status: 400 });
   }
+
+  const workspaceId = await getWorkspaceId();
 
   const encoder = new TextEncoder();
 
@@ -29,12 +32,18 @@ export async function POST(request: NextRequest) {
           return;
         }
 
+        if (!body.pathname.startsWith(incomingAssetPrefix(workspaceId))) {
+          send("error", JSON.stringify({ error: "Upload does not belong to this workspace." }));
+          controller.close();
+          return;
+        }
+
         const buffer = await readAssetBuffer(body.pathname);
         const ext = body.originalFilename.split(".").pop()?.toLowerCase();
         let id: string;
 
         if (ext === "pdf") {
-          id = await processPdfStreaming(buffer, body.originalFilename, body.type, (stage, current, total) => {
+          id = await processPdfStreaming(workspaceId, buffer, body.originalFilename, body.type, (stage, current, total) => {
             if (stage === "converting") {
               send("progress", JSON.stringify({ stage, message: `Converting ${total} pages to images...` }));
             } else if (stage === "thumbnail") {
@@ -43,7 +52,7 @@ export async function POST(request: NextRequest) {
           });
         } else if (ext === "png" || ext === "jpg" || ext === "jpeg") {
           send("progress", JSON.stringify({ stage: "converting", message: "Processing image..." }));
-          id = await processImage(buffer, body.originalFilename, body.type);
+          id = await processImage(workspaceId, buffer, body.originalFilename, body.type);
         } else {
           send("error", JSON.stringify({ error: "Unsupported file type. Please upload a PDF, PNG, or JPG file." }));
           controller.close();

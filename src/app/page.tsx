@@ -32,12 +32,16 @@ export default function Home() {
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [uploadMode, setUploadMode] = useState<"blob" | "server" | "unsupported">("server");
+  const [workspace, setWorkspace] = useState<{
+    workspaceId: string;
+    hasPersonalData: boolean;
+  } | null>(null);
   const uploadAbortRef = useRef<AbortController | null>(null);
 
   useEffect(() => {
     fetchDecks();
     fetchExams();
-    fetchUploadMode();
+    fetchRuntimeSettings();
   }, []);
 
   useEffect(() => {
@@ -78,15 +82,28 @@ export default function Home() {
     }
   };
 
-  const fetchUploadMode = async () => {
+  const fetchRuntimeSettings = async () => {
     try {
-      const res = await fetch("/api/upload");
+      const res = await fetch("/api/settings");
       const data = await res.json();
-      if (data.mode === "blob" || data.mode === "server" || data.mode === "unsupported") {
-        setUploadMode(data.mode);
+
+      if (data.uploadMode === "blob" || data.uploadMode === "server" || data.uploadMode === "unsupported") {
+        setUploadMode(data.uploadMode);
       }
+
+      if (typeof data.workspaceId === "string") {
+        const nextWorkspace = {
+          workspaceId: data.workspaceId,
+          hasPersonalData: Boolean(data.hasPersonalData),
+        };
+        setWorkspace(nextWorkspace);
+        return nextWorkspace;
+      }
+
+      return null;
     } catch (err) {
-      console.error("Failed to fetch upload mode:", err);
+      console.error("Failed to fetch runtime settings:", err);
+      return null;
     }
   };
 
@@ -152,9 +169,19 @@ export default function Home() {
     dispatch({ type: "SET_UPLOADING", isUploading: true, progress: `Uploading ${file.name}...` });
 
     try {
+      let workspaceId = workspace?.workspaceId;
+      if (!workspaceId) {
+        const runtimeSettings = await fetchRuntimeSettings();
+        workspaceId = runtimeSettings?.workspaceId;
+      }
+
       if (uploadMode === "blob") {
+        if (!workspaceId) {
+          throw new Error("Workspace is not ready yet. Please try again.");
+        }
+
         const safeName = file.name.replace(/[^\w.-]+/g, "_");
-        const pathname = `incoming/${type}/${crypto.randomUUID()}-${safeName}`;
+        const pathname = `incoming/${workspaceId}/${type}/${crypto.randomUUID()}-${safeName}`;
 
         const blob = await upload(pathname, file, {
           access: "private",
@@ -206,7 +233,7 @@ export default function Home() {
       uploadAbortRef.current = null;
       dispatch({ type: "SET_UPLOADING", isUploading: false });
     }
-  }, [uploadMode]);
+  }, [uploadMode, workspace]);
 
   const handleDeleteDeck = async (deckId: string) => {
     try {
@@ -372,6 +399,9 @@ export default function Home() {
                 </div>
                 <p className="text-lg text-zinc-600 dark:text-zinc-400 max-w-xl mx-auto leading-relaxed">
                   Study assistant for lecture PDFs. Upload slides, ask questions about specific regions, and get AI help with exam prep.
+                </p>
+                <p className="text-sm text-zinc-500 dark:text-zinc-400">
+                  Your uploads and settings stay inside your own browser workspace.
                 </p>
               </div>
               <UploadDropzone onUpload={handleUpload} />

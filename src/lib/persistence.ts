@@ -12,9 +12,9 @@ import type {
 import { isBlobStorageEnabled } from "./storage-env";
 
 const DATA_DIR = path.join(/* turbopackIgnore: true */ process.cwd(), "data");
-const LOCAL_STATE_PATH = path.join(DATA_DIR, "app-state.json");
-const LOCAL_LEGACY_DB_PATH = path.join(DATA_DIR, "slide-sage.db");
-const BLOB_STATE_PATH = "state/app-state.json";
+const USERS_DIR = path.join(DATA_DIR, "users");
+const LEGACY_LOCAL_STATE_PATH = path.join(DATA_DIR, "app-state.json");
+const LEGACY_LOCAL_DB_PATH = path.join(DATA_DIR, "slide-sage.db");
 
 export interface AppState {
   version: 1;
@@ -25,6 +25,12 @@ export interface AppState {
   settings: Record<string, string>;
   quizzes: Quiz[];
   slideRelevance: SlideRelevance[];
+}
+
+export interface WorkspaceInfo {
+  workspaceId: string;
+  hasPersonalData: boolean;
+  legacySharedLibraryAvailable: boolean;
 }
 
 const EMPTY_STATE: AppState = {
@@ -38,21 +44,58 @@ const EMPTY_STATE: AppState = {
   slideRelevance: [],
 };
 
+function cloneEmptyState(): AppState {
+  return structuredClone(EMPTY_STATE);
+}
+
+function userBlobBasePath(userId: string): string {
+  return `users/${userId}`;
+}
+
+function userBlobStatePath(userId: string): string {
+  return `${userBlobBasePath(userId)}/state/app-state.json`;
+}
+
+function userLocalDir(userId: string): string {
+  return path.join(USERS_DIR, userId);
+}
+
+function userLocalStatePath(userId: string): string {
+  return path.join(userLocalDir(userId), "app-state.json");
+}
+
+function legacyDeckAssetPrefix(deckId: string): string {
+  return `processed/decks/${deckId}/`;
+}
+
+function legacyExamAssetPrefix(examId: string): string {
+  return `processed/exams/${examId}/`;
+}
+
 export function sanitizeFilename(filename: string): string {
   return filename.replace(/[^\w.-]+/g, "_");
 }
 
-export function deckAssetPrefix(deckId: string): string {
-  return `processed/decks/${deckId}/`;
+export function incomingAssetPrefix(userId: string, type?: "deck" | "exam"): string {
+  return type ? `incoming/${userId}/${type}/` : `incoming/${userId}/`;
 }
 
-export function examAssetPrefix(examId: string): string {
-  return `processed/exams/${examId}/`;
+export function deckAssetPrefix(userId: string, deckId: string): string {
+  return `${userBlobBasePath(userId)}/processed/decks/${deckId}/`;
 }
 
-export function sourceAssetPath(id: string, type: "deck" | "exam", extension: string): string {
+export function examAssetPrefix(userId: string, examId: string): string {
+  return `${userBlobBasePath(userId)}/processed/exams/${examId}/`;
+}
+
+export function sourceAssetPath(
+  userId: string,
+  id: string,
+  type: "deck" | "exam",
+  extension: string
+): string {
   const safeExtension = extension.replace(/^\./, "").toLowerCase() || "bin";
-  return `${type === "deck" ? deckAssetPrefix(id) : examAssetPrefix(id)}source.${safeExtension}`;
+  return `${type === "deck" ? deckAssetPrefix(userId, id) : examAssetPrefix(userId, id)}source.${safeExtension}`;
 }
 
 function normalizeAssetPath(assetPath: string): string {
@@ -73,22 +116,55 @@ function ensureLocalDir(filePath: string) {
   fs.mkdirSync(path.dirname(filePath), { recursive: true });
 }
 
+function isAppStateEmpty(state: AppState): boolean {
+  return (
+    state.decks.length === 0 &&
+    state.slides.length === 0 &&
+    state.exams.length === 0 &&
+    state.examPages.length === 0 &&
+    state.quizzes.length === 0 &&
+    state.slideRelevance.length === 0 &&
+    Object.keys(state.settings).length === 0
+  );
+}
+
 async function streamToBuffer(stream: ReadableStream<Uint8Array>): Promise<Buffer> {
   return Buffer.from(await new Response(stream).arrayBuffer());
 }
 
-async function loadBlobState(): Promise<AppState> {
-  const result = await get(BLOB_STATE_PATH, { access: "private", useCache: false });
+function validateState(raw: unknown): AppState {
+  if (!raw || typeof raw !== "object") {
+    return cloneEmptyState();
+  }
+
+  const candidate = raw as Partial<AppState>;
+  return {
+    version: 1,
+    decks: Array.isArray(candidate.decks) ? candidate.decks : [],
+    slides: Array.isArray(candidate.slides) ? candidate.slides : [],
+    exams: Array.isArray(candidate.exams) ? candidate.exams : [],
+    examPages: Array.isArray(candidate.examPages) ? candidate.examPages : [],
+    settings:
+      candidate.settings && typeof candidate.settings === "object" && !Array.isArray(candidate.settings)
+        ? candidate.settings as Record<string, string>
+        : {},
+    quizzes: Array.isArray(candidate.quizzes) ? candidate.quizzes : [],
+    slideRelevance: Array.isArray(candidate.slideRelevance) ? candidate.slideRelevance : [],
+  };
+}
+
+async function loadBlobStateAtPath(pathname: string): Promise<AppState | null> {
+  const result = await get(pathname, { access: "private", useCache: false });
   if (!result || result.statusCode !== 200 || !result.stream) {
-    return structuredClone(EMPTY_STATE);
+    return null;
   }
 
   const buffer = await streamToBuffer(result.stream);
   return validateState(JSON.parse(buffer.toString("utf8")));
 }
 
-async function saveBlobState(state: AppState): Promise<void> {
-  await put(BLOB_STATE_PATH, JSON.stringify(state), {
+async function saveBlobStateAtPath(pathname: string, state: AppState): Promise<void> {
+  await put(pathname, JSON.stringify(state), {
     access: "private",
     addRandomSuffix: false,
     allowOverwrite: true,
@@ -97,12 +173,12 @@ async function saveBlobState(state: AppState): Promise<void> {
 }
 
 async function migrateLegacySqliteIfNeeded(): Promise<AppState | null> {
-  if (!fs.existsSync(LOCAL_LEGACY_DB_PATH)) {
+  if (!fs.existsSync(LEGACY_LOCAL_DB_PATH)) {
     return null;
   }
 
   const BetterSqlite3 = (await import("better-sqlite3")).default;
-  const db = new BetterSqlite3(LOCAL_LEGACY_DB_PATH, { readonly: true });
+  const db = new BetterSqlite3(LEGACY_LOCAL_DB_PATH, { readonly: true });
 
   try {
     const decks = db.prepare("SELECT * FROM decks ORDER BY created_at DESC").all() as Deck[];
@@ -136,7 +212,7 @@ async function migrateLegacySqliteIfNeeded(): Promise<AppState | null> {
       ? (db.prepare("SELECT * FROM slide_relevance").all() as SlideRelevance[])
       : [];
 
-    const state: AppState = {
+    return {
       version: 1,
       decks,
       slides: slides.map((slide) => ({
@@ -153,69 +229,190 @@ async function migrateLegacySqliteIfNeeded(): Promise<AppState | null> {
       quizzes,
       slideRelevance,
     };
-
-    return state;
   } finally {
     db.close();
   }
 }
 
-async function loadLocalState(): Promise<AppState> {
-  if (fs.existsSync(LOCAL_STATE_PATH)) {
-    const raw = await fs.promises.readFile(LOCAL_STATE_PATH, "utf8");
+async function loadLegacyLocalState(): Promise<AppState | null> {
+  if (fs.existsSync(LEGACY_LOCAL_STATE_PATH)) {
+    const raw = await fs.promises.readFile(LEGACY_LOCAL_STATE_PATH, "utf8");
     return validateState(JSON.parse(raw));
   }
 
-  const migrated = await migrateLegacySqliteIfNeeded();
-  if (migrated) {
-    await saveLocalState(migrated);
-    return migrated;
-  }
-
-  return structuredClone(EMPTY_STATE);
+  return migrateLegacySqliteIfNeeded();
 }
 
-async function saveLocalState(state: AppState): Promise<void> {
-  ensureLocalDir(LOCAL_STATE_PATH);
-  await fs.promises.writeFile(LOCAL_STATE_PATH, JSON.stringify(state, null, 2), "utf8");
-}
-
-function validateState(raw: unknown): AppState {
-  if (!raw || typeof raw !== "object") {
-    return structuredClone(EMPTY_STATE);
+async function loadLocalUserState(userId: string): Promise<AppState | null> {
+  const statePath = userLocalStatePath(userId);
+  if (!fs.existsSync(statePath)) {
+    return null;
   }
 
-  const candidate = raw as Partial<AppState>;
+  const raw = await fs.promises.readFile(statePath, "utf8");
+  return validateState(JSON.parse(raw));
+}
+
+async function saveLocalUserState(userId: string, state: AppState): Promise<void> {
+  const statePath = userLocalStatePath(userId);
+  ensureLocalDir(statePath);
+  await fs.promises.writeFile(statePath, JSON.stringify(state, null, 2), "utf8");
+}
+
+function guessContentType(assetPath: string): string {
+  const lower = assetPath.toLowerCase();
+  if (lower.endsWith(".png")) return "image/png";
+  if (lower.endsWith(".jpg") || lower.endsWith(".jpeg")) return "image/jpeg";
+  if (lower.endsWith(".pdf")) return "application/pdf";
+  if (lower.endsWith(".json")) return "application/json";
+  return "application/octet-stream";
+}
+
+async function assetExists(assetPath: string): Promise<boolean> {
+  if (isBlobStorageEnabled()) {
+    const result = await get(assetPath, { access: "private", useCache: false });
+    return Boolean(result && result.statusCode === 200);
+  }
+
+  return fs.existsSync(resolveLocalPath(assetPath));
+}
+
+async function copyAsset(fromPath: string, toPath: string): Promise<void> {
+  const buffer = await readAssetBuffer(fromPath);
+  await writeAssetBuffer(toPath, buffer, guessContentType(toPath));
+}
+
+async function copyFirstExistingAsset(candidates: string[], targetPath: string): Promise<void> {
+  for (const candidate of candidates) {
+    if (await assetExists(candidate)) {
+      await copyAsset(candidate, targetPath);
+      return;
+    }
+  }
+}
+
+function rewriteLegacyStateForUser(userId: string, legacyState: AppState): AppState {
   return {
     version: 1,
-    decks: Array.isArray(candidate.decks) ? candidate.decks : [],
-    slides: Array.isArray(candidate.slides) ? candidate.slides : [],
-    exams: Array.isArray(candidate.exams) ? candidate.exams : [],
-    examPages: Array.isArray(candidate.examPages) ? candidate.examPages : [],
-    settings:
-      candidate.settings && typeof candidate.settings === "object" && !Array.isArray(candidate.settings)
-        ? candidate.settings as Record<string, string>
-        : {},
-    quizzes: Array.isArray(candidate.quizzes) ? candidate.quizzes : [],
-    slideRelevance: Array.isArray(candidate.slideRelevance) ? candidate.slideRelevance : [],
+    decks: legacyState.decks.map((deck) => ({ ...deck })),
+    slides: legacyState.slides.map((slide) => ({
+      ...slide,
+      image_path: slide.image_path ? `${deckAssetPrefix(userId, slide.deck_id)}slide_${slide.slide_number}.png` : null,
+      thumbnail_path: slide.thumbnail_path ? `${deckAssetPrefix(userId, slide.deck_id)}thumb_${slide.slide_number}.png` : null,
+    })),
+    exams: legacyState.exams.map((exam) => ({ ...exam })),
+    examPages: legacyState.examPages.map((page) => ({
+      ...page,
+      image_path: page.image_path ? `${examAssetPrefix(userId, page.exam_id)}slide_${page.page_number}.png` : null,
+    })),
+    settings: { ...legacyState.settings },
+    quizzes: legacyState.quizzes.map((quiz) => ({
+      ...quiz,
+      questions: quiz.questions.map((question) => ({ ...question })),
+    })),
+    slideRelevance: legacyState.slideRelevance.map((item) => ({ ...item })),
   };
 }
 
-export async function loadAppState(): Promise<AppState> {
-  if (isBlobStorageEnabled()) {
-    return loadBlobState();
+async function copyLegacyAssetsToUser(userId: string, legacyState: AppState): Promise<void> {
+  for (const deck of legacyState.decks) {
+    const extension = path.extname(deck.original_filename || "").replace(/^\./, "").toLowerCase() || "pdf";
+    await copyFirstExistingAsset(
+      [
+        sourceAssetPath(userId, deck.id, "deck", extension).replace(`${userBlobBasePath(userId)}/`, ""),
+        `${legacyDeckAssetPrefix(deck.id)}source.${extension}`,
+        path.join("processed", "decks", deck.id, deck.original_filename),
+      ],
+      sourceAssetPath(userId, deck.id, "deck", extension)
+    );
   }
 
-  return loadLocalState();
+  for (const slide of legacyState.slides) {
+    const imagePath = `${deckAssetPrefix(userId, slide.deck_id)}slide_${slide.slide_number}.png`;
+    const thumbnailPath = `${deckAssetPrefix(userId, slide.deck_id)}thumb_${slide.slide_number}.png`;
+
+    if (slide.image_path) {
+      await copyFirstExistingAsset(
+        [normalizeAssetPath(slide.image_path), `${legacyDeckAssetPrefix(slide.deck_id)}slide_${slide.slide_number}.png`],
+        imagePath
+      );
+    }
+
+    if (slide.thumbnail_path) {
+      await copyFirstExistingAsset(
+        [normalizeAssetPath(slide.thumbnail_path), `${legacyDeckAssetPrefix(slide.deck_id)}thumb_${slide.slide_number}.png`],
+        thumbnailPath
+      );
+    }
+  }
+
+  for (const exam of legacyState.exams) {
+    const extension = path.extname(exam.original_filename || "").replace(/^\./, "").toLowerCase() || "pdf";
+    await copyFirstExistingAsset(
+      [
+        `${legacyExamAssetPrefix(exam.id)}source.${extension}`,
+        path.join("processed", "exams", exam.id, exam.original_filename),
+      ],
+      sourceAssetPath(userId, exam.id, "exam", extension)
+    );
+  }
+
+  for (const page of legacyState.examPages) {
+    const imagePath = `${examAssetPrefix(userId, page.exam_id)}slide_${page.page_number}.png`;
+
+    if (page.image_path) {
+      await copyFirstExistingAsset(
+        [normalizeAssetPath(page.image_path), `${legacyExamAssetPrefix(page.exam_id)}slide_${page.page_number}.png`],
+        imagePath
+      );
+    }
+  }
 }
 
-export async function saveAppState(state: AppState): Promise<void> {
+export async function getWorkspaceInfo(userId: string): Promise<WorkspaceInfo> {
+  const state = await loadAppState(userId);
+
+  return {
+    workspaceId: userId,
+    hasPersonalData: !isAppStateEmpty(state),
+    legacySharedLibraryAvailable: !isBlobStorageEnabled() && Boolean(await loadLegacyLocalState()),
+  };
+}
+
+export async function loadAppState(userId: string): Promise<AppState> {
   if (isBlobStorageEnabled()) {
-    await saveBlobState(state);
+    const personalState = await loadBlobStateAtPath(userBlobStatePath(userId));
+    if (personalState) {
+      return personalState;
+    }
+    // Hosted workspaces must never auto-import from the legacy shared library.
+    // That would assign one shared dataset to whichever browser arrives first.
+    return cloneEmptyState();
+  }
+
+  const personalState = await loadLocalUserState(userId);
+  if (personalState) {
+    return personalState;
+  }
+
+  const legacyState = await loadLegacyLocalState();
+  if (!legacyState) {
+    return cloneEmptyState();
+  }
+
+  const importedState = rewriteLegacyStateForUser(userId, legacyState);
+  await copyLegacyAssetsToUser(userId, legacyState);
+  await saveLocalUserState(userId, importedState);
+  return importedState;
+}
+
+export async function saveAppState(userId: string, state: AppState): Promise<void> {
+  if (isBlobStorageEnabled()) {
+    await saveBlobStateAtPath(userBlobStatePath(userId), state);
     return;
   }
 
-  await saveLocalState(state);
+  await saveLocalUserState(userId, state);
 }
 
 export async function readAssetBuffer(assetPath: string): Promise<Buffer> {

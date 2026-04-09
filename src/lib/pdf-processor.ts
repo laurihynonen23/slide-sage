@@ -111,15 +111,17 @@ async function renderPdfPages(
 }
 
 export async function processPdfStreaming(
+  userId: string,
   fileBuffer: Buffer,
   originalFilename: string,
   type: "deck" | "exam" = "deck",
   onProgress?: (stage: ProgressStage, current: number, total: number) => void
 ): Promise<string> {
-  return processPdf(fileBuffer, originalFilename, type, onProgress);
+  return processPdf(userId, fileBuffer, originalFilename, type, onProgress);
 }
 
 export async function processPdf(
+  userId: string,
   fileBuffer: Buffer,
   originalFilename: string,
   type: "deck" | "exam" = "deck",
@@ -128,11 +130,11 @@ export async function processPdf(
   const id = uuidv4();
   const extension = extensionFromFilename(originalFilename);
   const title = getTitleFromFilename(originalFilename);
-  const state = await loadAppState();
-  const assetPrefix = type === "deck" ? deckAssetPrefix(id) : examAssetPrefix(id);
+  const state = await loadAppState(userId);
+  const assetPrefix = type === "deck" ? deckAssetPrefix(userId, id) : examAssetPrefix(userId, id);
 
   await writeAssetBuffer(
-    sourceAssetPath(id, type, extension),
+    sourceAssetPath(userId, id, type, extension),
     fileBuffer,
     contentTypeFromExtension(extension)
   );
@@ -208,11 +210,12 @@ export async function processPdf(
     state.examPages.push(...newPages);
   }
 
-  await saveAppState(state);
+  await saveAppState(userId, state);
   return id;
 }
 
 export async function processImage(
+  userId: string,
   fileBuffer: Buffer,
   originalFilename: string,
   type: "deck" | "exam" = "deck"
@@ -220,9 +223,9 @@ export async function processImage(
   const id = uuidv4();
   const extension = extensionFromFilename(originalFilename);
   const title = getTitleFromFilename(originalFilename);
-  const state = await loadAppState();
-  const assetPrefix = type === "deck" ? deckAssetPrefix(id) : examAssetPrefix(id);
-  const sourcePath = sourceAssetPath(id, type, extension);
+  const state = await loadAppState(userId);
+  const assetPrefix = type === "deck" ? deckAssetPrefix(userId, id) : examAssetPrefix(userId, id);
+  const sourcePath = sourceAssetPath(userId, id, type, extension);
   const imagePath = `${assetPrefix}slide_1.png`;
   const thumbnailPath = `${assetPrefix}thumb_1.png`;
 
@@ -276,7 +279,7 @@ export async function processImage(
     });
   }
 
-  await saveAppState(state);
+  await saveAppState(userId, state);
   return id;
 }
 

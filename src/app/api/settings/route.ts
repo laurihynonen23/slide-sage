@@ -1,10 +1,12 @@
 import { NextRequest } from "next/server";
 import {
+  getWorkspaceInfo,
   loadAppState,
   saveAppState,
 } from "@/lib/persistence";
 import { canPersistApiKeys, getUploadMode, isBlobStorageEnabled } from "@/lib/storage-env";
 import { getDefaultProvider } from "@/lib/provider-settings";
+import { getWorkspaceId } from "@/lib/user-session";
 
 function maskKey(value: string | undefined): string {
   return value ? `...${value.slice(-4)}` : "";
@@ -12,7 +14,9 @@ function maskKey(value: string | undefined): string {
 
 export async function GET() {
   try {
-    const state = await loadAppState();
+    const workspaceId = await getWorkspaceId();
+    const state = await loadAppState(workspaceId);
+    const workspace = await getWorkspaceInfo(workspaceId);
     const settings = state.settings;
     const allowApiKeyPersistence = canPersistApiKeys();
     const provider = getDefaultProvider(settings);
@@ -32,9 +36,12 @@ export async function GET() {
       anthropicKeyHint: maskKey(anthropicKey),
       openaiKeyHint: maskKey(openaiKey),
       canPersistApiKeys: allowApiKeyPersistence,
-      apiKeyStorage: allowApiKeyPersistence ? "local" : "environment",
+      apiKeyStorage: allowApiKeyPersistence ? (isBlobStorageEnabled() ? "workspace" : "local") : "environment",
       storageBackend: isBlobStorageEnabled() ? "vercel-blob" : "local",
       uploadMode: getUploadMode(),
+      workspaceId: workspace.workspaceId,
+      legacySharedLibraryAvailable: workspace.legacySharedLibraryAvailable,
+      hasPersonalData: workspace.hasPersonalData,
     });
   } catch (error) {
     console.error("Settings GET error:", error);
@@ -44,13 +51,15 @@ export async function GET() {
 
 export async function POST(request: NextRequest) {
   try {
-    const state = await loadAppState();
+    const workspaceId = await getWorkspaceId();
     const body = await request.json() as {
       provider?: string;
       model?: string;
       anthropicApiKey?: string;
       openaiApiKey?: string;
     };
+
+    const state = await loadAppState(workspaceId);
 
     if (body.provider) state.settings.provider = body.provider;
     if (body.model) state.settings.model = body.model;
@@ -67,7 +76,7 @@ export async function POST(request: NextRequest) {
       }
     }
 
-    await saveAppState(state);
+    await saveAppState(workspaceId, state);
 
     return Response.json({
       ok: true,

@@ -1,5 +1,6 @@
 import { NextRequest } from "next/server";
 import { loadAppState } from "@/lib/persistence";
+import { getWorkspaceId } from "@/lib/user-session";
 
 export async function GET(
   request: NextRequest,
@@ -7,7 +8,8 @@ export async function GET(
 ) {
   try {
     const { deckId } = await params;
-    const state = await loadAppState();
+    const workspaceId = await getWorkspaceId();
+    const state = await loadAppState(workspaceId);
     const slides = state.slides
       .filter((slide) => slide.deck_id === deckId)
       .sort((a, b) => a.slide_number - b.slide_number);

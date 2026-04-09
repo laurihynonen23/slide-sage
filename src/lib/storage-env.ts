@@ -15,5 +15,5 @@ export function getUploadMode(): UploadMode {
 }
 
 export function canPersistApiKeys(): boolean {
-  return !isHostedDeployment() && !isBlobStorageEnabled();
+  return !isHostedDeployment() || isBlobStorageEnabled();
 }

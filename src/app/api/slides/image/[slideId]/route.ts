@@ -1,5 +1,6 @@
 import { NextRequest } from "next/server";
 import { loadAppState, readAssetBuffer } from "@/lib/persistence";
+import { getWorkspaceId } from "@/lib/user-session";
 
 export async function GET(
   request: NextRequest,
@@ -7,7 +8,8 @@ export async function GET(
 ) {
   try {
     const { slideId } = await params;
-    const state = await loadAppState();
+    const workspaceId = await getWorkspaceId();
+    const state = await loadAppState(workspaceId);
     const slide = state.slides.find((item) => item.id === slideId);
 
     if (!slide || !slide.image_path) {

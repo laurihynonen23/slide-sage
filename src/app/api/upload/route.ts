@@ -1,7 +1,9 @@
 import { NextRequest } from "next/server";
 import { handleUpload, type HandleUploadBody } from "@vercel/blob/client";
 import { processImage, processPdfStreaming } from "@/lib/pdf-processor";
+import { incomingAssetPrefix } from "@/lib/persistence";
 import { getUploadMode } from "@/lib/storage-env";
+import { getWorkspaceId } from "@/lib/user-session";
 
 function sseHeaders() {
   return {
@@ -12,10 +14,12 @@ function sseHeaders() {
 }
 
 export async function GET() {
-  return Response.json({ mode: getUploadMode() });
+  const workspaceId = await getWorkspaceId();
+  return Response.json({ mode: getUploadMode(), workspaceId });
 }
 
 export async function POST(request: NextRequest) {
+  const workspaceId = await getWorkspaceId();
   const uploadMode = getUploadMode();
   const contentType = request.headers.get("content-type") || "";
 
@@ -29,12 +33,18 @@ export async function POST(request: NextRequest) {
       const jsonResponse = await handleUpload({
         request,
         body,
-        onBeforeGenerateToken: async () => ({
-          allowedContentTypes: ["application/pdf", "image/png", "image/jpeg"],
-          maximumSizeInBytes: 100 * 1024 * 1024,
-          addRandomSuffix: false,
-          allowOverwrite: true,
-        }),
+        onBeforeGenerateToken: async (pathname) => {
+          if (!pathname.startsWith(incomingAssetPrefix(workspaceId))) {
+            throw new Error("Invalid upload target for this workspace.");
+          }
+
+          return {
+            allowedContentTypes: ["application/pdf", "image/png", "image/jpeg"],
+            maximumSizeInBytes: 100 * 1024 * 1024,
+            addRandomSuffix: false,
+            allowOverwrite: true,
+          };
+        },
       });
 
       return Response.json(jsonResponse);
@@ -81,7 +91,7 @@ export async function POST(request: NextRequest) {
         let id: string;
 
         if (ext === "pdf") {
-          id = await processPdfStreaming(buffer, filename, type, (stage, current, total) => {
+          id = await processPdfStreaming(workspaceId, buffer, filename, type, (stage, current, total) => {
             if (stage === "converting") {
               send("progress", JSON.stringify({ stage, message: `Converting ${total} pages to images...` }));
             } else if (stage === "thumbnail") {
@@ -90,7 +100,7 @@ export async function POST(request: NextRequest) {
           });
         } else if (ext === "png" || ext === "jpg" || ext === "jpeg") {
           send("progress", JSON.stringify({ stage: "converting", message: "Processing image..." }));
-          id = await processImage(buffer, filename, type);
+          id = await processImage(workspaceId, buffer, filename, type);
         } else {
           send("error", JSON.stringify({ error: "Unsupported file type. Please upload a PDF, PNG, or JPG file." }));
           controller.close();

@@ -2,6 +2,7 @@ import { NextRequest } from "next/server";
 import { generateQuizWithProvider } from "@/lib/ai-providers";
 import { loadAppState, saveAppState } from "@/lib/persistence";
 import { getProviderConfigFromSettings } from "@/lib/provider-settings";
+import { getWorkspaceId } from "@/lib/user-session";
 import type { Deck, DifficultyMode, ExamDocument, ExamPage, Quiz, Slide } from "@/lib/types";
 import { v4 as uuidv4 } from "uuid";
 
@@ -17,7 +18,8 @@ export async function POST(request: NextRequest) {
       useExams: boolean;
     };
 
-    const state = await loadAppState();
+    const workspaceId = await getWorkspaceId();
+    const state = await loadAppState(workspaceId);
     const deck = state.decks.find((item) => item.id === deckId) as Deck | undefined;
     if (!deck) return Response.json({ error: "Deck not found" }, { status: 404 });
 
@@ -77,7 +79,7 @@ export async function POST(request: NextRequest) {
     };
 
     state.quizzes = [quiz, ...state.quizzes];
-    await saveAppState(state);
+    await saveAppState(workspaceId, state);
 
     return Response.json(quiz);
   } catch (error) {
