@@ -72,7 +72,17 @@ body {
 }
 
 .dark .chat-markdown {
-  color: rgb(255 255 255);
+  color: rgb(255 255 255) !important;
+}
+
+.dark .chat-markdown p,
+.dark .chat-markdown li,
+.dark .chat-markdown h1,
+.dark .chat-markdown h2,
+.dark .chat-markdown h3,
+.dark .chat-markdown h4,
+.dark .chat-markdown span {
+  color: rgb(255 255 255) !important;
 }
 
 .chat-markdown > :first-child {
