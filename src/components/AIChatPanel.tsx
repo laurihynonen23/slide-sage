@@ -275,7 +275,7 @@ export function AIChatPanel({
                 </div>
               ) : (
                 <div className={cn(
-                  "chat-markdown prose dark:prose-invert prose-p:leading-[1.75] prose-headings:mt-5 prose-headings:mb-2.5 prose-pre:bg-zinc-100 dark:prose-pre:bg-zinc-800 prose-pre:my-3 [&_.katex-display]:my-4 [&_.katex-display]:overflow-x-auto",
+                  "chat-markdown prose dark:prose-invert prose-p:leading-[1.75] prose-headings:mt-5 prose-headings:mb-2.5 prose-pre:bg-zinc-100 dark:prose-pre:bg-zinc-800 prose-pre:my-3 [&_.katex-display]:my-4 [&_.katex-display]:overflow-x-auto dark:text-white dark:[&_p]:text-white dark:[&_li]:text-white dark:[&_h1]:text-white dark:[&_h2]:text-white dark:[&_h3]:text-white dark:[&_h4]:text-white dark:[&_strong]:text-white",
                   isExpanded
                     ? "chat-markdown-expanded w-full max-w-[40rem] prose-base mx-auto prose-pre:text-sm [&_.katex]:text-base"
                     : "w-full max-w-none prose-sm prose-pre:text-[12px] [&_.katex]:text-[0.95em]"
